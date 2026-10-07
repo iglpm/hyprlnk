@@ -1,0 +1,29 @@
+[package]
+name = "hyprlnk"
+description = "A fast linker, developed with and built into the Rune build system"
+version = "2027.0.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["linker", "coff", "pe", "lld", "windows"]
+categories = ["development-tools::build-utils", "command-line-utilities"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "hyprlnk"
+path = "src/main.rs"
+
+[dependencies]
+rayon.workspace = true
+xxhash-rust.workspace = true
+hashbrown = { version = "0.17", default-features = false }
+rustc-demangle = "0.1"
+mimalloc = { version = "0.1", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
