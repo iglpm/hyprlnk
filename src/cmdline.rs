@@ -1,10 +1,8 @@
-//! Command lines: `@file` response files and Windows-style quoting, which
-//! `link.exe` command lines, response files and `.drectve` sections all use.
+//! Response files and Windows-style command-line quoting.
 
 use crate::diag::Result;
 use crate::{bail, err};
 
-/// Replace every `@file` argument with the arguments in the file, recursively.
 pub fn expand_response_files(args: Vec<String>) -> Result<Vec<String>> {
     let mut out = Vec::with_capacity(args.len());
     expand_into(args, &mut out, 0)?;
@@ -30,8 +28,6 @@ fn expand_into(args: Vec<String>, out: &mut Vec<String>, depth: usize) -> Result
     Ok(())
 }
 
-/// Text from a response file: UTF-16 when it starts with a byte order mark
-/// (what `link.exe` accepts), UTF-8 otherwise.
 pub fn decode_text(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
         let units: Vec<u16> = rest
@@ -55,10 +51,7 @@ pub fn decode_text(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-/// Split `s` the way the Microsoft C runtime splits a command line:
-/// whitespace separates arguments, double quotes group, `2n` backslashes
-/// before a quote are `n` backslashes, `2n+1` are `n` and a literal quote, and
-/// `""` inside quotes is a literal quote.
+/// Split `s` like the MSVC runtime does (backslash/quote rules included).
 pub fn tokenize_windows(s: &str, out: &mut Vec<String>) {
     let mut chars = s.chars().peekable();
     loop {

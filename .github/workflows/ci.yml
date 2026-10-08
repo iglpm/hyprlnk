@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: Lint (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-2022]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+      - run: cargo clippy --all-targets -- -D warnings
+
+  windows:
+    # The end-to-end tests link real programs and run them: on the x64
+    # runner for x64 and x86 (and ARM64 images compared with lld-link), on
+    # the ARM64 runner for ARM64.
+    name: Test (Windows ${{ matrix.arch }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            arch: x64
+          - os: windows-11-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc, aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --all-targets
+      - name: Link a release build of hyprlnk with itself
+        shell: pwsh
+        run: |
+          cargo build --release
+          $hyprlnk = Resolve-Path target/release/hyprlnk.exe
+          Copy-Item $hyprlnk "$env:RUNNER_TEMP/hyprlnk-stage0.exe"
+          $env:RUSTFLAGS = "-C linker=$env:RUNNER_TEMP/hyprlnk-stage0.exe"
+          cargo build --release --target-dir target/self
+          ./target/self/release/hyprlnk.exe --version
+
+  unix:
+    # The linker itself is portable (it can cross-link Windows images from
+    # anywhere); its unit tests run everywhere.
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test
+
+  msrv:
+    name: Minimum Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - run: cargo check --all-targets

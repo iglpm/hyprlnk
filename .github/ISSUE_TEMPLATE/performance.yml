@@ -1,0 +1,53 @@
+name: Performance
+description: A link is slower than it should be (or slower than lld)
+title: "[perf] "
+labels: ["performance"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Speed is the point of hyprlnk, so slow links are bugs. Numbers help most:
+        capture the link with `/REPRODUCE:<dir>`, then run
+        `hyprlnk @link.rsp /TIME` and `lld-link @link.rsp` a few times each.
+  - type: textarea
+    id: time
+    attributes:
+      label: "`/TIME` output"
+      description: From `hyprlnk @link.rsp /TIME` (or with `-C link-arg=/TIME`).
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: comparison
+    attributes:
+      label: Comparison
+      description: Wall-clock times for hyprlnk and lld-link (or link.exe), best of several runs.
+      placeholder: |
+        hyprlnk:  1.2 s
+        lld-link: 0.9 s
+    validations:
+      required: true
+  - type: input
+    id: size
+    attributes:
+      label: Size of the link
+      description: Number of objects and libraries, total input size, output and PDB size.
+  - type: input
+    id: machine
+    attributes:
+      label: Machine
+      description: CPU (cores/threads), memory, disk, Windows version.
+      placeholder: Ryzen 7 7700X (8C/16T), 32 GB, NVMe, Windows 11 24H2
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: hyprlnk version
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: A zipped `/REPRODUCE` directory, if you can share it.

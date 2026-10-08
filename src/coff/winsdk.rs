@@ -1,23 +1,21 @@
-//! Library search directories: `/LIBPATH`, then `%LIB%`, and when `%LIB%`
-//! isn't set (hyprlnk run outside a Visual Studio prompt, not by `rustc`),
-//! the newest installed MSVC toolset and Windows SDK.
+//! Library search: `/LIBPATH`, `%LIB%`, else the newest installed MSVC toolset and Windows SDK.
 
 use std::path::{Path, PathBuf};
 
-/// Where to look for libraries, in order.
-pub fn search_paths(lib_paths: &[PathBuf]) -> Vec<PathBuf> {
+use super::arch::Machine;
+
+pub fn search_paths(lib_paths: &[PathBuf], machine: Machine) -> Vec<PathBuf> {
     let mut out = vec![PathBuf::new()];
     out.extend(lib_paths.iter().cloned());
     match std::env::var_os("LIB") {
         Some(lib) if !lib.is_empty() => out.extend(std::env::split_paths(&lib)),
-        _ => out.extend(installed_lib_dirs()),
+        _ => out.extend(installed_lib_dirs(machine)),
     }
     out
 }
 
-/// x64 library directories of the newest MSVC toolset and Windows SDK found
-/// in their default locations.
-pub fn installed_lib_dirs() -> Vec<PathBuf> {
+pub fn installed_lib_dirs(machine: Machine) -> Vec<PathBuf> {
+    let arch = machine.lib_dir();
     if !cfg!(windows) {
         return Vec::new();
     }
@@ -27,8 +25,6 @@ pub fn installed_lib_dirs() -> Vec<PathBuf> {
         .filter_map(std::env::var_os)
         .map(PathBuf::from)
         .collect();
-    // MSVC: <VS>\<year>\<edition>\VC\Tools\MSVC\<version>\lib\x64, or
-    // %VCToolsInstallDir% in a developer prompt.
     let msvc = std::env::var_os("VCToolsInstallDir")
         .map(PathBuf::from)
         .or_else(|| {
@@ -43,9 +39,8 @@ pub fn installed_lib_dirs() -> Vec<PathBuf> {
             newest(tools)
         });
     if let Some(dir) = msvc {
-        out.push(dir.join("lib").join("x64"));
+        out.push(dir.join("lib").join(arch));
     }
-    // Windows SDK: Windows Kits\10\Lib\<version>\{ucrt,um}\x64.
     for pf in &program_files {
         let versions = children(&pf.join("Windows Kits").join("10").join("Lib"));
         if let Some(v) = newest(
@@ -54,8 +49,8 @@ pub fn installed_lib_dirs() -> Vec<PathBuf> {
                 .filter(|v| v.join("um").exists())
                 .collect(),
         ) {
-            out.push(v.join("ucrt").join("x64"));
-            out.push(v.join("um").join("x64"));
+            out.push(v.join("ucrt").join(arch));
+            out.push(v.join("um").join(arch));
             break;
         }
     }
@@ -74,7 +69,6 @@ fn children(dir: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// The directory whose name is the highest dotted version.
 fn newest(dirs: Vec<PathBuf>) -> Option<PathBuf> {
     dirs.into_iter().max_by_key(|p| version_key(p))
 }

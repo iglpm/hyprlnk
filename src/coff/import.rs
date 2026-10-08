@@ -1,5 +1,4 @@
-//! Short import objects: the members of import libraries (`kernel32.lib`),
-//! each describing one function or variable a DLL exports.
+//! Short import objects: the members of import libraries.
 
 use super::*;
 use crate::bail;
@@ -8,13 +7,9 @@ use crate::diag::Result;
 #[derive(Debug, Clone, Copy)]
 pub struct ShortImport<'a> {
     pub machine: u16,
-    /// The symbol this image refers to it by (`__imp_` is added for the
-    /// pointer).
     pub symbol: &'a [u8],
     pub dll: &'a [u8],
-    /// Code, data or const.
     pub kind: u8,
-    /// Import by name (with a hint into the DLL's name table) or by ordinal.
     pub name: Option<&'a [u8]>,
     pub ordinal_or_hint: u16,
 }
@@ -68,7 +63,6 @@ fn strip_prefix(s: &[u8]) -> &[u8] {
     }
 }
 
-/// Encode a short import object.
 pub fn write_short_import(
     machine: u16,
     symbol: &str,

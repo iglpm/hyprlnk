@@ -1,6 +1,4 @@
-//! Reading inputs: files are mapped into memory rather than read, and kept
-//! alive in an [`Arena`] for the whole link so that everything parsed from
-//! them can borrow instead of copy.
+//! Inputs are memory-mapped and kept alive in an [`Arena`] so parsed data can borrow.
 
 use std::fs::File;
 use std::io;
@@ -11,7 +9,6 @@ use std::sync::Mutex;
 /// page fault per page, more than copying a small file.
 const MAP_THRESHOLD: u64 = 64 * 1024;
 
-/// The bytes of one input file.
 pub enum Bytes {
     Mapped(Mmap),
     Owned(Box<[u8]>),
@@ -26,7 +23,6 @@ impl Bytes {
     }
 }
 
-/// Map (or, when small, read) a whole file.
 pub fn load(path: &Path) -> io::Result<Bytes> {
     let file = File::open(path)?;
     let len = file.metadata()?.len();
@@ -39,9 +35,6 @@ pub fn load(path: &Path) -> io::Result<Bytes> {
     Mmap::map(&file, len as usize).map(Bytes::Mapped)
 }
 
-/// Owns every input (and every string the link creates) until the link is
-/// over. Items are never removed or moved, so a slice handed out stays valid
-/// for as long as the arena lives.
 pub struct Arena {
     items: Mutex<Vec<Bytes>>,
 }
@@ -75,7 +68,6 @@ impl Arena {
     }
 }
 
-/// A read-only private mapping of a whole file.
 pub struct Mmap {
     ptr: *const u8,
     len: usize,
@@ -162,7 +154,6 @@ impl Mmap {
 
     #[cfg(not(any(unix, windows)))]
     fn map(file: &File, len: usize) -> io::Result<Mmap> {
-        // No mapping: read the file and leak it into the "mapping".
         use std::io::Read;
         let mut buf = Vec::with_capacity(len);
         (&*file).read_to_end(&mut buf)?;
@@ -198,10 +189,8 @@ impl Drop for Mmap {
     }
 }
 
-/// The output: a memory-mapped temporary file next to the destination,
-/// renamed over it when complete. The image is built in place (no copy), and
-/// an existing output is replaced, never written into: it may be a hard link
-/// into Rune's store, or a program that is still running.
+/// Memory-mapped temp file renamed over the destination when complete. Never writes into an
+/// existing output: it may be a hard link into Rune's store or a running program.
 pub struct OutputFile {
     path: std::path::PathBuf,
     tmp: std::path::PathBuf,
@@ -214,7 +203,6 @@ pub struct OutputFile {
 unsafe impl Send for OutputFile {}
 
 impl OutputFile {
-    /// A zero-filled output of `len` bytes (it can be shortened later).
     pub fn create(path: &Path, len: usize) -> io::Result<OutputFile> {
         let mut name = path.file_name().unwrap_or_default().to_os_string();
         name.push(format!(".hyprlnk-{}.tmp", std::process::id()));
@@ -248,18 +236,13 @@ impl OutputFile {
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
 
-    /// Flush to `len` bytes and move it into place.
     pub fn commit(mut self, len: usize) -> io::Result<()> {
         self.unmap();
         let file = self.file.take().unwrap();
         file.set_len(len as u64)?;
         drop(file);
         if std::fs::rename(&self.tmp, &self.path).is_err() {
-            // A read-only destination (a file from Rune's store) can't be
-            // replaced by a rename on Windows: remove it first. Removing
-            // ignores the read-only attribute on current Windows; changing
-            // the attribute is the last resort, as it is shared by every
-            // hard link to the file (the store's copy included).
+            // On Windows a read-only destination (from Rune's store) must be removed before the rename.
             if std::fs::remove_file(&self.path).is_ok() {
                 return std::fs::rename(&self.tmp, &self.path);
             }
@@ -285,7 +268,6 @@ impl OutputFile {
 
 impl Drop for OutputFile {
     fn drop(&mut self) {
-        // Not committed (an error): leave no temporary file behind.
         self.unmap();
         if self.file.take().is_some() {
             let _ = std::fs::remove_file(&self.tmp);
@@ -433,7 +415,6 @@ mod tests {
         out.bytes()[..3].copy_from_slice(b"new");
         out.commit(3).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"new");
-        // An output that isn't committed leaves nothing behind.
         drop(OutputFile::create(&path, 10).unwrap());
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
         assert_eq!(std::fs::read(&path).unwrap(), b"new");

@@ -1,0 +1,34 @@
+name: Feature request
+description: An option, input format, platform or capability hyprlnk should have
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What do you need?
+      description: What you're trying to do, and what's in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: How should it work?
+      description: For link.exe/lld-link options, which option and what it should do.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Command-line option
+        - Input format
+        - Debug info (PDB)
+        - New platform (ELF, Mach-O, ...)
+        - Rune integration
+        - Performance
+        - Other
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives
+      description: Workarounds you use today, or how other linkers do it.

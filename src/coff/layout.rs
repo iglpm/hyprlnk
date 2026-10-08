@@ -1,15 +1,4 @@
-//! Output sections and addresses.
-//!
-//! Following the PE/COFF rules and what `link.exe`/`lld-link` do:
-//!
-//! * input sections are grouped by full name and output characteristics, and
-//!   the groups sorted by name, so `.CRT$XCA` < `.CRT$XCU` < `.CRT$XCZ` (the
-//!   C runtime finds its initializer tables between such markers);
-//! * a group joins the output section named by the part before `$`;
-//! * `/MERGE`s (and the default ones: `.bss` into `.data`, `.xdata`, `.idata`
-//!   and `.edata` into `.rdata`) append whole output sections to others;
-//! * output sections come in link.exe's order: `.text`, `.rdata`, `.data`,
-//!   `.pdata`, the rest by name, `.rsrc`, then discardable ones (`.reloc`).
+//! Output sections and addresses: input sections grouped by full name and sorted (`.CRT$XCA` < `.CRT$XCZ`), merged, then ordered as link.exe does.
 
 use std::collections::HashMap;
 
@@ -37,9 +26,7 @@ pub struct OutSection {
 pub struct Layout {
     pub sections: Vec<OutSection>,
     pub header_size: u32,
-    /// The RVA after the last section: where `.reloc` goes.
     pub end_rva: u32,
-    /// The file size before `.reloc`.
     pub file_end: u32,
 }
 
@@ -48,11 +35,10 @@ const RDATA: u32 = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
 const DATA: u32 = RDATA | IMAGE_SCN_MEM_WRITE;
 const BSS: u32 = IMAGE_SCN_CNT_UNINITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
 
-/// Size of the headers before the section table: DOS header and stub, PE
-/// signature, COFF header, PE32+ optional header.
-pub const HEADERS_BEFORE_SECTIONS: u32 = 120 + 4 + 20 + 240;
+pub fn headers_before_sections(machine: super::arch::Machine) -> u32 {
+    120 + 4 + 20 + machine.optional_header_size()
+}
 
-/// `.text$mn` → `.text`; `.text.unlikely` → `.text`.
 fn output_name(name: &[u8]) -> &[u8] {
     let base = name.split(|&b| b == b'$').next().unwrap_or(name);
     match base.iter().skip(1).position(|&b| b == b'.') {
@@ -76,9 +62,6 @@ impl Linker<'_> {
     }
 
     pub fn layout(&mut self) -> Layout {
-        // Partial sections: (full name, characteristics) → chunks, in input
-        // order. A small per-object cache saves most map lookups: objects
-        // repeat `.text`, `.xdata`, `.pdata` for every function.
         let mut partials: Vec<(Vec<u8>, u32, Vec<ChunkRef>)> = Vec::new();
         let mut index: HashMap<(Vec<u8>, u32), usize> = HashMap::new();
         let mut tls_align = 0;
@@ -117,6 +100,7 @@ impl Linker<'_> {
             (".idata$5", RDATA, IDATA_IAT),
             (".idata$6", RDATA, IDATA_HINTS),
             (".idata$7", RDATA, IDATA_DLLS),
+            (".rsrc", RDATA, RSRC),
         ] {
             if self.synth[k].size > 0 {
                 let p = *index
@@ -133,7 +117,6 @@ impl Linker<'_> {
             (&partials[a].0, partials[a].1).cmp(&(&partials[b].0, partials[b].1))
         });
 
-        // Output sections, link.exe's usual ones first.
         let mut sections: Vec<OutSection> = Vec::new();
         let find_or_create = |sections: &mut Vec<OutSection>, name: &[u8], chars: u32| -> usize {
             if let Some(i) = sections
@@ -179,6 +162,8 @@ impl Linker<'_> {
         for (k, name, chars) in [
             (THUNKS, ".text", CODE),
             (LOCAL_IMPORTS, ".rdata", RDATA),
+            (SAFESEH, ".rdata", RDATA),
+            (DEBUG_DIR, ".rdata", RDATA),
             (EDATA, ".edata", RDATA),
         ] {
             if self.synth[k].size > 0 {
@@ -187,7 +172,6 @@ impl Linker<'_> {
             }
         }
 
-        // Merges, following chains (`a=b`, `b=c`).
         for (from, to) in &self.merges {
             let mut to = to.as_str();
             for _ in 0..16 {
@@ -223,11 +207,10 @@ impl Linker<'_> {
         };
         sections.sort_by_key(rank);
 
-        // Addresses. One section header is reserved for `.reloc`.
         let file_align = self.cfg.file_align as u64;
         let sect_align = self.cfg.section_align as u64;
         let header_size = align_up(
-            HEADERS_BEFORE_SECTIONS as u64 + 40 * (sections.len() as u64 + 1),
+            headers_before_sections(self.machine) as u64 + 40 * (sections.len() as u64 + 1),
             file_align,
         );
         let mut rva = align_up(header_size, sect_align);
@@ -262,7 +245,6 @@ impl Linker<'_> {
             sec.file_off = if sec.raw_size > 0 { file_off as u32 } else { 0 };
             file_off += sec.raw_size as u64;
             rva = align_up(rva + off, sect_align);
-            // Names are at most 8 bytes in an image without a string table.
             sec.name.truncate(8);
         }
         self.out_rvas = sections.iter().map(|s| s.rva).collect();

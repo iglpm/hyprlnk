@@ -1,7 +1,5 @@
-//! The standalone `hyprlnk` executable. Rune runs the same linker from its own
-//! executable (see `hyprlnk::EMBEDDED_ENV`).
+//! The standalone `hyprlnk` executable.
 
-/// The link is mostly small allocations on many threads at once.
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 

@@ -1,10 +1,4 @@
-//! COFF object files, regular and `/bigobj`.
-//!
-//! Parsing borrows everything from the input's bytes. Only what resolution
-//! needs is decoded up front: section headers, and the external symbols with
-//! their names hashed (done here, on the parallel parsing threads, so the
-//! sequential resolution never hashes). Local symbols and relocations are
-//! read again from the raw tables when they are needed.
+//! COFF object files, regular and `/bigobj`, borrowed from the input's bytes.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -14,12 +8,10 @@ use crate::{bail, err};
 
 pub const NONE: u32 = u32::MAX;
 
-/// `{D1BAA1C7-BAEE-4ba9-AF20-FAF66AA4DCB8}` as stored in a bigobj header.
 const BIGOBJ_CLASS_ID: [u8; 16] = [
     0xC7, 0xA1, 0xBA, 0xD1, 0xEE, 0xBA, 0xA9, 0x4B, 0xAF, 0x20, 0xFA, 0xF6, 0x6A, 0xA4, 0xDC, 0xB8,
 ];
 
-/// What kind of input a buffer holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileKind {
     Archive,
@@ -27,7 +19,6 @@ pub enum FileKind {
     Object,
     BigObject,
     ShortImport,
-    /// An "anonymous object" that isn't a bigobj: MSVC `/GL` output.
     AnonObject,
     Bitcode,
     Resource,
@@ -52,7 +43,6 @@ pub fn identify(d: &[u8]) -> FileKind {
     if d.starts_with(&[0xCF, 0xFA, 0xED, 0xFE]) || d.starts_with(&[0xCE, 0xFA, 0xED, 0xFE]) {
         return FileKind::MachO;
     }
-    // A .res file starts with an empty resource entry.
     if d.starts_with(&[
         0, 0, 0, 0, 0x20, 0, 0, 0, 0xFF, 0xFF, 0, 0, 0xFF, 0xFF, 0, 0,
     ]) {
@@ -88,36 +78,25 @@ pub fn identify(d: &[u8]) -> FileKind {
 #[derive(Debug, Clone, Copy)]
 pub struct Comdat {
     pub selection: u8,
-    /// For `ASSOCIATIVE`: the (0-based) section this one lives and dies with.
     pub assoc: u32,
-    /// Index of the leader symbol, whose resolution decides whether this
-    /// copy of the COMDAT is the one kept.
     pub leader: u32,
 }
 
 pub struct Section<'a> {
     pub name: &'a [u8],
-    /// Raw contents; empty for uninitialized data.
     pub data: &'a [u8],
-    /// Size in the image.
     pub size: u32,
     pub chars: u32,
     pub align: u32,
-    /// The section header's `VirtualAddress`, which relocation offsets are
-    /// relative to (always 0 in practice).
     pub va: u32,
-    /// Raw 10-byte relocation records.
     pub relocs: &'a [u8],
     pub comdat: Option<Comdat>,
-    /// First associative child, then each child's next sibling: the sections
-    /// that must be kept when this one is.
     pub assoc_child: u32,
     pub assoc_next: u32,
-    /// Never written: debug info, linker directives, removed sections and
-    /// COMDAT copies that lost.
     pub discarded: bool,
+    pub debug: bool,
     pub live: AtomicBool,
-    /// Placement, filled in by the layout.
+    pub folded_into: Option<(u32, u32)>,
     pub rva: u32,
     pub out: u32,
 }
@@ -142,22 +121,11 @@ impl Section<'_> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExtKind {
-    /// Defined in section `sec` (0-based) at `value`.
-    Defined {
-        sec: u32,
-        value: u32,
-    },
-    Absolute {
-        value: u32,
-    },
+    Defined { sec: u32, value: u32 },
+    Absolute { value: u32 },
     Undefined,
-    Common {
-        size: u32,
-    },
-    /// A weak external, falling back to symbol table entry `alias`.
-    Weak {
-        alias: u32,
-    },
+    Common { size: u32 },
+    Weak { alias: u32 },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -166,8 +134,7 @@ pub struct ExternalSym<'a> {
     pub name: &'a [u8],
     pub hash: u64,
     pub kind: ExtKind,
-    /// The global symbol, when the parsing thread found it already in the
-    /// table ([`NONE`] otherwise), so merging needn't look it up.
+    pub function: bool,
     pub id: u32,
 }
 
@@ -182,12 +149,13 @@ pub struct ObjFile<'a> {
     pub sections: Vec<Section<'a>>,
     pub externals: Vec<ExternalSym<'a>>,
     pub directives: Vec<&'a [u8]>,
-    /// For each symbol-table index: the global symbol it resolved to, or
-    /// [`NONE`] for local symbols (and auxiliary records).
+    pub feat00: u32,
+    pub sxdata: &'a [u8],
+    pub debug_s: Vec<u32>,
+    pub debug_t: Option<u32>,
     pub sym_ids: Vec<u32>,
 }
 
-/// A local (or any) symbol, decoded from the raw table.
 #[derive(Debug, Clone, Copy)]
 pub struct RawSym {
     pub value: u32,
@@ -249,16 +217,25 @@ impl<'a> ObjFile<'a> {
             sections: Vec::with_capacity(nsecs),
             externals: Vec::new(),
             directives: Vec::new(),
+            feat00: 0,
+            sxdata: &data[..0],
+            debug_s: Vec::new(),
+            debug_t: None,
             sym_ids: vec![NONE; nsyms],
         };
 
         for i in 0..nsecs {
             let h = &data[sec_table + i * 40..sec_table + i * 40 + 40];
             let section = obj.parse_section(data, h)?;
+            match section.name {
+                b".sxdata" => obj.sxdata = section.data,
+                b".debug$S" => obj.debug_s.push(i as u32),
+                b".debug$T" => obj.debug_t = Some(i as u32),
+                _ => {}
+            }
             obj.sections.push(section);
         }
         obj.parse_symbols()?;
-        // Link associative children to their parents.
         for i in (0..obj.sections.len()).rev() {
             if let Some(c) = obj.sections[i].comdat
                 && c.selection == IMAGE_COMDAT_SELECT_ASSOCIATIVE
@@ -324,7 +301,9 @@ impl<'a> ObjFile<'a> {
             assoc_child: NONE,
             assoc_next: NONE,
             discarded,
+            debug: name.starts_with(b".debug$"),
             live: AtomicBool::new(false),
+            folded_into: None,
             rva: 0,
             out: NONE,
         })
@@ -358,7 +337,6 @@ impl<'a> ObjFile<'a> {
         Ok(until_nul(self.strtab.get(off..).unwrap_or(&[])))
     }
 
-    /// The raw record of symbol `i`.
     #[inline]
     fn sym_record(&self, i: usize) -> &'a [u8] {
         &self.symtab[i * self.sym_size..(i + 1) * self.sym_size]
@@ -400,17 +378,20 @@ impl<'a> ObjFile<'a> {
     fn parse_symbols(&mut self) -> Result<()> {
         let n = self.nsyms as usize;
         let nsecs = self.sections.len();
-        // Sections whose COMDAT definition was seen and whose leader (the
-        // next symbol in that section) is still to come.
         let mut awaiting_leader = vec![false; nsecs];
         let mut i = 0;
         while i < n {
             let e = self.sym_record(i);
             let value = u32le(e, 8);
-            let (section, class, naux) = if self.big {
-                (u32le(e, 12) as i32, e[18], e[19] as usize)
+            let (section, ty, class, naux) = if self.big {
+                (u32le(e, 12) as i32, u16le(e, 16), e[18], e[19] as usize)
             } else {
-                (u16le(e, 12) as i16 as i32, e[16], e[17] as usize)
+                (
+                    u16le(e, 12) as i16 as i32,
+                    u16le(e, 14),
+                    e[16],
+                    e[17] as usize,
+                )
             };
             if i + naux >= n && naux > 0 {
                 bail!(
@@ -454,6 +435,12 @@ impl<'a> ObjFile<'a> {
                 }
             }
 
+            if class == IMAGE_SYM_CLASS_STATIC
+                && section == IMAGE_SYM_ABSOLUTE
+                && &e[..8] == b"@feat.00"
+            {
+                self.feat00 = value;
+            }
             let kind = match class {
                 IMAGE_SYM_CLASS_EXTERNAL => match section {
                     s if s > 0 => Some(ExtKind::Defined { sec, value }),
@@ -475,6 +462,7 @@ impl<'a> ObjFile<'a> {
                     name,
                     hash: crate::coff::symtab::hash_name(name),
                     kind,
+                    function: (ty >> 4) & 0xF == 2,
                     id: NONE,
                 });
             }
@@ -483,14 +471,11 @@ impl<'a> ObjFile<'a> {
         Ok(())
     }
 
-    /// Discard the associative children of discarded sections (and their
-    /// children), after COMDAT selection.
     pub fn propagate_discards(&mut self) {
         for i in 0..self.sections.len() {
             if self.sections[i].discarded {
                 continue;
             }
-            // Walk up to the root of the association chain.
             let mut cur = i;
             for _ in 0..16 {
                 match self.sections[cur].comdat {
@@ -512,11 +497,8 @@ impl<'a> ObjFile<'a> {
     }
 }
 
-/// Sections never written whatever their flags say: debug info (no PDB or
-/// DWARF is produced) and Control Flow Guard tables (CFG isn't implemented).
 fn is_removed_name(name: &[u8]) -> bool {
-    name.starts_with(b".debug$")
-        || name.starts_with(b".debug_")
+    name.starts_with(b".debug_")
         || name.starts_with(b".gfids$")
         || name.starts_with(b".giats$")
         || name.starts_with(b".gljmp$")
@@ -538,7 +520,6 @@ fn until_nul(s: &[u8]) -> &[u8] {
 pub(crate) mod tests {
     use super::*;
 
-    /// A tiny COFF object builder for tests.
     #[derive(Default)]
     #[allow(clippy::type_complexity)]
     pub struct ObjBuilder {

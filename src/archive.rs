@@ -1,8 +1,4 @@
-//! `ar` archives: rlibs, MSVC `.lib` files (static libraries and import
-//! libraries alike) and Unix `.a` files.
-//!
-//! Only the symbol table is read up front. A member is parsed when the link
-//! needs one of its symbols, by the offset the symbol table gives.
+//! `ar` archives: rlibs, MSVC `.lib` files and Unix `.a` files. Members are parsed lazily.
 
 use crate::diag::Result;
 use crate::{bail, err};
@@ -11,8 +7,6 @@ const MAGIC: &[u8] = b"!<arch>\n";
 const THIN_MAGIC: &[u8] = b"!<thin>\n";
 const HEADER: usize = 60;
 
-/// One symbol-table entry: a name and the offset of the member header that
-/// defines it.
 #[derive(Debug, Clone, Copy)]
 pub struct ArchiveSymbol<'a> {
     pub name: &'a [u8],
@@ -22,11 +16,8 @@ pub struct ArchiveSymbol<'a> {
 pub struct Archive<'a> {
     data: &'a [u8],
     longnames: &'a [u8],
-    /// Offset of the first member after the symbol table and name table.
     first_member: usize,
     pub symbols: Vec<ArchiveSymbol<'a>>,
-    /// Whether the archive had a symbol table; without one, every member is
-    /// read to build it.
     pub has_symbol_table: bool,
 }
 
@@ -65,7 +56,6 @@ impl<'a> Archive<'a> {
             symbols: Vec::new(),
             has_symbol_table: false,
         };
-        // Leading special members: the symbol table(s) and the long-name table.
         let mut off = MAGIC.len();
         let mut seen_symtab = false;
         while off < data.len() {
@@ -121,12 +111,10 @@ impl<'a> Archive<'a> {
         })
     }
 
-    /// The member whose header is at `offset` (as the symbol table says).
     pub fn member_at(&self, offset: u32) -> Result<Member<'a>> {
         let h = self.header_at(offset as usize)?;
         let mut data = &self.data[h.data_start..h.data_start + h.size];
         let name = if let Some(len) = h.name.strip_prefix(b"#1/") {
-            // BSD: the name follows the header and counts towards the size.
             let len = parse_decimal(len).ok_or_else(|| err!("bad BSD member name"))?;
             if len > data.len() {
                 bail!("bad BSD member name length");
@@ -151,7 +139,6 @@ impl<'a> Archive<'a> {
         Ok(Member { name, data, offset })
     }
 
-    /// Every regular member, in order.
     pub fn members(&self) -> Result<Vec<Member<'a>>> {
         let mut out = Vec::new();
         let mut off = self.first_member;
@@ -233,8 +220,6 @@ fn trim_trailing(s: &[u8], c: u8) -> &[u8] {
     &s[..end]
 }
 
-/// Writes COFF-style archives (with both linker members), as `lib.exe` and
-/// `llvm-lib` do: used for import libraries.
 pub struct ArchiveWriter {
     members: Vec<(String, Vec<u8>, Vec<Vec<u8>>)>,
 }
@@ -252,13 +237,11 @@ impl ArchiveWriter {
         }
     }
 
-    /// Add a member named `name` that defines `symbols`.
     pub fn add(&mut self, name: &str, data: Vec<u8>, symbols: Vec<Vec<u8>>) {
         self.members.push((name.to_string(), data, symbols));
     }
 
     pub fn finish(self) -> Vec<u8> {
-        // Long names: members whose "name/" doesn't fit in 16 bytes.
         let mut longnames = Vec::new();
         let header_names: Vec<String> = self
             .members
@@ -286,7 +269,6 @@ impl ArchiveWriter {
         let second_size = 4 + 4 * self.members.len() + 4 + 2 * nsyms + names_len;
         let padded = |n: usize| n + (n & 1);
 
-        // Member offsets, now that the sizes of what precedes them are known.
         let mut off = MAGIC.len() + HEADER + padded(first_size) + HEADER + padded(second_size);
         if !longnames.is_empty() {
             off += HEADER + padded(longnames.len());
@@ -300,7 +282,6 @@ impl ArchiveWriter {
         let mut out = Vec::with_capacity(off);
         out.extend_from_slice(MAGIC);
 
-        // First linker member: big-endian, in member order.
         let mut first = Vec::with_capacity(first_size);
         first.extend_from_slice(&(nsyms as u32).to_be_bytes());
         for (i, m) in self.members.iter().enumerate() {
@@ -314,7 +295,6 @@ impl ArchiveWriter {
         }
         write_member(&mut out, "/", &first);
 
-        // Second linker member: little-endian, symbols sorted by name.
         let mut sorted: Vec<(&[u8], u16)> = self
             .members
             .iter()

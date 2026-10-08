@@ -1,9 +1,4 @@
-//! Which sections are written.
-//!
-//! With `/OPT:REF` (the default unless `/DEBUG`), as in `link.exe`: every
-//! non-COMDAT section is kept, and a COMDAT section is kept only if something
-//! kept refers to it. Rust and C++ put every function and most data in its
-//! own COMDAT, so this drops most of what libraries bring in unused.
+//! `/OPT:REF`: non-COMDAT sections are roots; a COMDAT is kept only when something kept refers to it.
 
 use std::sync::atomic::Ordering::Relaxed;
 
@@ -23,7 +18,7 @@ impl Linker<'_> {
         if !gc {
             for obj in &self.objs {
                 for s in &obj.sections {
-                    s.live.store(!s.discarded, Relaxed);
+                    s.live.store(!s.discarded && !s.debug, Relaxed);
                 }
             }
             for imp in &self.imports {
@@ -36,7 +31,7 @@ impl Linker<'_> {
         let mut stack: Vec<(u32, u32)> = Vec::new();
         for (oi, obj) in self.objs.iter().enumerate() {
             for (si, s) in obj.sections.iter().enumerate() {
-                if !s.discarded && !s.is_comdat() {
+                if !s.discarded && !s.debug && !s.is_comdat() {
                     s.live.store(true, Relaxed);
                     stack.push((oi as u32, si as u32));
                 }
@@ -45,15 +40,12 @@ impl Linker<'_> {
         let mut roots: Vec<SymId> = self.gc_roots.clone();
         roots.extend(self.entry);
         roots.extend(self.exports.iter().map(|e| e.sym));
-        roots.extend(self.symtab.find(b"_tls_used"));
-        roots.extend(self.symtab.find(b"_load_config_used"));
+        roots.extend(self.special("_tls_used"));
+        roots.extend(self.special("_load_config_used"));
         for id in roots {
             self.mark_sym(id, &mut stack);
         }
 
-        // Breadth-first, one frontier at a time; a large frontier is scanned
-        // on all threads (marking is an atomic swap, so each section is
-        // claimed once).
         let mut frontier = stack;
         while !frontier.is_empty() {
             frontier = if frontier.len() < 256 {
@@ -77,7 +69,6 @@ impl Linker<'_> {
         }
     }
 
-    /// Mark what a live section refers to.
     fn visit(&self, oi: u32, si: u32, next: &mut Vec<(u32, u32)>) {
         let obj = &self.objs[oi as usize];
         let s = &obj.sections[si as usize];
@@ -125,7 +116,7 @@ impl Linker<'_> {
         let Some(s) = self.objs[obj as usize].sections.get(sec as usize) else {
             return;
         };
-        if !s.discarded && !s.live.swap(true, Relaxed) {
+        if !s.discarded && !s.debug && !s.live.swap(true, Relaxed) {
             stack.push((obj, sec));
         }
     }

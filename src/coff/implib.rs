@@ -1,11 +1,8 @@
-//! Import libraries: the `.lib` other images link against to call a DLL.
-//!
-//! Laid out like `lib.exe` and `llvm-lib` write them, so `link.exe`, `lld`
-//! and hyprlnk all read them: an import descriptor object, the null import
-//! descriptor, the null thunk, then a short import object per export.
+//! Import libraries, laid out like `lib.exe`/`llvm-lib` write them.
 
 use std::path::{Path, PathBuf};
 
+use super::arch::Machine;
 use super::import::write_short_import;
 use super::resolve::Linker;
 use super::*;
@@ -38,20 +35,21 @@ impl Linker<'_> {
         let null_descriptor = "__NULL_IMPORT_DESCRIPTOR".to_string();
         let null_thunk = format!("\x7f{lib}_NULL_THUNK_DATA");
 
+        let m = self.machine;
         let mut w = ArchiveWriter::new();
         w.add(
             &dll,
-            import_descriptor(&dll, &descriptor, &null_descriptor, &null_thunk),
+            import_descriptor(m, &dll, &descriptor, &null_descriptor, &null_thunk),
             vec![descriptor.clone().into_bytes()],
         );
         w.add(
             &dll,
-            null_import_descriptor(&null_descriptor),
+            null_import_descriptor(m, &null_descriptor),
             vec![null_descriptor.clone().into_bytes()],
         );
         w.add(
             &dll,
-            null_thunk_data(&null_thunk),
+            null_thunk_data(m, &null_thunk),
             vec![null_thunk.clone().into_bytes()],
         );
 
@@ -65,22 +63,20 @@ impl Linker<'_> {
             } else {
                 IMPORT_CODE
             };
+            let symbol = self.import_symbol(e);
             let name_type = if e.noname {
                 IMPORT_ORDINAL
+            } else if m == Machine::X86 && e.name.starts_with('_') && e.name.contains('@') {
+                IMPORT_NAME
+            } else if symbol != e.name {
+                IMPORT_NAME_UNDECORATE
             } else {
                 IMPORT_NAME
             };
-            let member = write_short_import(
-                IMAGE_FILE_MACHINE_AMD64,
-                &e.name,
-                &dll,
-                kind,
-                name_type,
-                e.ordinal,
-            );
-            let mut syms = vec![format!("__imp_{}", e.name).into_bytes()];
+            let member = write_short_import(m.coff(), &symbol, &dll, kind, name_type, e.ordinal);
+            let mut syms = vec![format!("__imp_{symbol}").into_bytes()];
             if kind != IMPORT_DATA {
-                syms.push(e.name.clone().into_bytes());
+                syms.push(symbol.clone().into_bytes());
             }
             w.add(&dll, member, syms);
         }
@@ -89,14 +85,38 @@ impl Linker<'_> {
     }
 }
 
-fn coff_header(buf: &mut Vec<u8>, nsections: u16, symtab_off: u32, nsyms: u32) {
-    buf.extend_from_slice(&IMAGE_FILE_MACHINE_AMD64.to_le_bytes());
+impl Linker<'_> {
+    fn import_symbol(&self, e: &super::resolve::Export) -> String {
+        if self.machine != Machine::X86 || e.name.starts_with(['_', '?', '@']) {
+            return e.name.clone();
+        }
+        let internal = String::from_utf8_lossy(self.symtab.get(e.sym).name);
+        let undecorated = format!("_{}", e.name);
+        if internal == undecorated || internal.starts_with(&format!("{undecorated}@")) {
+            internal.into_owned()
+        } else {
+            undecorated
+        }
+    }
+}
+
+fn reloc_addr32nb(m: Machine) -> u16 {
+    match m {
+        Machine::X64 => IMAGE_REL_AMD64_ADDR32NB,
+        Machine::Arm64 => super::arch::IMAGE_REL_ARM64_ADDR32NB,
+        Machine::X86 => super::arch::IMAGE_REL_I386_DIR32NB,
+    }
+}
+
+fn coff_header(buf: &mut Vec<u8>, m: Machine, nsections: u16, symtab_off: u32, nsyms: u32) {
+    buf.extend_from_slice(&m.coff().to_le_bytes());
     buf.extend_from_slice(&nsections.to_le_bytes());
     buf.extend_from_slice(&0u32.to_le_bytes());
     buf.extend_from_slice(&symtab_off.to_le_bytes());
     buf.extend_from_slice(&nsyms.to_le_bytes());
     buf.extend_from_slice(&0u16.to_le_bytes());
-    buf.extend_from_slice(&0u16.to_le_bytes());
+    let chars: u16 = if m.is64() { 0 } else { 0x0100 };
+    buf.extend_from_slice(&chars.to_le_bytes());
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -123,7 +143,6 @@ fn section_header(
     buf.extend_from_slice(&chars.to_le_bytes());
 }
 
-/// A symbol whose name is in the string table at `strx` (or short `name`).
 fn symbol(buf: &mut Vec<u8>, name: Option<&[u8]>, strx: u32, value: u32, section: i16, class: u8) {
     match name {
         Some(n) => {
@@ -160,6 +179,7 @@ const IDATA_CHARS_8: u32 =
     0x0040_0000 | IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE;
 
 fn import_descriptor(
+    m: Machine,
     dll: &str,
     descriptor: &str,
     null_descriptor: &str,
@@ -171,7 +191,7 @@ fn import_descriptor(
     let relocs = idata2 + 20;
     let idata6 = relocs + 3 * 10;
     let symtab = idata6 + dll.len() as u32 + 1;
-    coff_header(&mut b, 2, symtab, 7);
+    coff_header(&mut b, m, 2, symtab, 7);
     section_header(&mut b, b".idata$2", 20, idata2, relocs, 3, IDATA_CHARS_4);
     section_header(
         &mut b,
@@ -183,11 +203,10 @@ fn import_descriptor(
         IDATA_CHARS_2,
     );
     b.extend_from_slice(&[0; 20]);
-    // Name, lookup table and address table RVAs.
     for (off, sym) in [(12u32, 2u32), (0, 3), (16, 4)] {
         b.extend_from_slice(&off.to_le_bytes());
         b.extend_from_slice(&sym.to_le_bytes());
-        b.extend_from_slice(&IMAGE_REL_AMD64_ADDR32NB.to_le_bytes());
+        b.extend_from_slice(&reloc_addr32nb(m).to_le_bytes());
     }
     b.extend_from_slice(dll.as_bytes());
     b.push(0);
@@ -210,10 +229,10 @@ fn import_descriptor(
     b
 }
 
-fn null_import_descriptor(name: &str) -> Vec<u8> {
+fn null_import_descriptor(m: Machine, name: &str) -> Vec<u8> {
     let mut b = Vec::new();
     let data = 20 + 40;
-    coff_header(&mut b, 1, data + 20, 1);
+    coff_header(&mut b, m, 1, data + 20, 1);
     section_header(&mut b, b".idata$3", 20, data, 0, 0, IDATA_CHARS_4);
     b.extend_from_slice(&[0; 20]);
     symbol(&mut b, None, 4, 0, 1, IMAGE_SYM_CLASS_EXTERNAL);
@@ -221,13 +240,19 @@ fn null_import_descriptor(name: &str) -> Vec<u8> {
     b
 }
 
-fn null_thunk_data(name: &str) -> Vec<u8> {
+fn null_thunk_data(m: Machine, name: &str) -> Vec<u8> {
     let mut b = Vec::new();
     let data = 20 + 2 * 40;
-    coff_header(&mut b, 2, data + 16, 1);
-    section_header(&mut b, b".idata$5", 8, data, 0, 0, IDATA_CHARS_8);
-    section_header(&mut b, b".idata$4", 8, data + 8, 0, 0, IDATA_CHARS_8);
-    b.extend_from_slice(&[0; 16]);
+    let ptr = m.ptr_size();
+    let chars = if m.is64() {
+        IDATA_CHARS_8
+    } else {
+        IDATA_CHARS_4
+    };
+    coff_header(&mut b, m, 2, data + 2 * ptr, 1);
+    section_header(&mut b, b".idata$5", ptr, data, 0, 0, chars);
+    section_header(&mut b, b".idata$4", ptr, data + ptr, 0, 0, chars);
+    b.extend_from_slice(&vec![0; 2 * ptr as usize]);
     symbol(&mut b, None, 4, 0, 1, IMAGE_SYM_CLASS_EXTERNAL);
     string_table(&mut b, &[name]);
     b
@@ -241,6 +266,7 @@ mod tests {
     #[test]
     fn descriptor_objects_parse() {
         let d = import_descriptor(
+            Machine::X64,
             "foo.dll",
             "__IMPORT_DESCRIPTOR_foo",
             "__NULL_IMPORT_DESCRIPTOR",
@@ -259,10 +285,10 @@ mod tests {
                 b"\x7ffoo_NULL_THUNK_DATA"
             ]
         );
-        let nd = null_import_descriptor("__NULL_IMPORT_DESCRIPTOR");
+        let nd = null_import_descriptor(Machine::X64, "__NULL_IMPORT_DESCRIPTOR");
         let n = ObjFile::parse(&nd, "n".into()).unwrap();
         assert_eq!(n.externals[0].name, b"__NULL_IMPORT_DESCRIPTOR");
-        let td = null_thunk_data("\x7ffoo_NULL_THUNK_DATA");
+        let td = null_thunk_data(Machine::X86, "\x7ffoo_NULL_THUNK_DATA");
         let t = ObjFile::parse(&td, "t".into()).unwrap();
         assert_eq!(t.sections.len(), 2);
     }

@@ -1,9 +1,4 @@
-//! The global symbol table.
-//!
-//! Names are hashed once, on the threads that parse the files they come from
-//! (xxh3), and the table is a [`HashTable`] of symbol ids looked up by that
-//! precomputed hash, so resolution — the one sequential phase — only compares
-//! bytes on a hash match.
+//! The global symbol table, keyed by name hashes precomputed on the parsing threads.
 
 use hashbrown::HashTable;
 
@@ -14,48 +9,17 @@ pub fn hash_name(name: &[u8]) -> u64 {
     xxhash_rust::xxh3::xxh3_64(name)
 }
 
-/// What a symbol currently resolves to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Def {
     Undefined,
-    /// Defined by archive member at `offset` of archive `archive`, which is
-    /// loaded if something needs the symbol.
-    Lazy {
-        archive: u32,
-        offset: u32,
-    },
-    /// Defined in section `sec` of object `obj`.
-    Defined {
-        obj: u32,
-        sec: u32,
-        value: u32,
-    },
-    Absolute {
-        va: u64,
-    },
-    /// A common symbol (`int x;` in C): space in `.bss`, allocated later.
-    Common {
-        obj: u32,
-        size: u32,
-    },
-    /// The import address table slot of import `imp` (`__imp_name`).
-    Import {
-        imp: u32,
-    },
-    /// The jump thunk calling import `imp` (`name`, for a function).
-    Thunk {
-        imp: u32,
-    },
-    /// `__imp_name` for a `name` defined in this image: a pointer to it.
-    LocalImport {
-        slot: u32,
-    },
-    /// Space the linker created: `off` bytes into synthetic chunk `chunk`.
-    Synthetic {
-        chunk: u8,
-        off: u32,
-    },
-    /// `__ImageBase`.
+    Lazy { archive: u32, offset: u32 },
+    Defined { obj: u32, sec: u32, value: u32 },
+    Absolute { va: u64 },
+    Common { obj: u32, size: u32 },
+    Import { imp: u32 },
+    Thunk { imp: u32 },
+    LocalImport { slot: u32 },
+    Synthetic { chunk: u8, off: u32 },
     ImageBase,
 }
 
@@ -68,35 +32,26 @@ impl Def {
         matches!(self, Def::Lazy { .. })
     }
 
-    /// Defined in a way that satisfies references.
     pub fn is_defined(self) -> bool {
         !matches!(self, Def::Undefined | Def::Lazy { .. })
     }
 }
 
-/// What a weak external falls back to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WeakAlias {
     Global(SymId),
-    /// A local symbol of the object that declared the weak external.
-    Local {
-        obj: u32,
-        sec: u32,
-        value: u32,
-    },
+    Local { obj: u32, sec: u32, value: u32 },
 }
 
 pub struct Symbol<'a> {
     pub name: &'a [u8],
     pub def: Def,
-    /// The object that first referenced the symbol, for diagnostics.
     pub first_ref: u32,
-    /// Defined by a COMDAT leader: other copies of the COMDAT give way.
     pub comdat: bool,
-    /// A default the linker provided (e.g. `__guard_flags`), which a real
-    /// definition replaces without a duplicate-symbol error.
+    /// A linker default (e.g. `__guard_flags`) that a real definition replaces.
     pub replaceable: bool,
     pub weak_alias: Option<WeakAlias>,
+    pub function: bool,
 }
 
 #[derive(Default)]
@@ -131,8 +86,6 @@ impl<'a> SymbolTable<'a> {
             .copied()
     }
 
-    /// The symbol named `name`, created undefined if it doesn't exist.
-    /// Returns whether it was created.
     #[inline]
     pub fn intern(&mut self, name: &'a [u8], hash: u64, referrer: u32) -> (SymId, bool) {
         let syms = &self.syms;
@@ -153,6 +106,7 @@ impl<'a> SymbolTable<'a> {
                     comdat: false,
                     replaceable: false,
                     weak_alias: None,
+                    function: false,
                 });
                 self.hashes.push(hash);
                 (id, true)
@@ -187,7 +141,6 @@ mod tests {
         assert_eq!(t.find(b"beta"), Some(b));
         assert_eq!(t.find(b"gamma"), None);
         assert_eq!(t.get(a).first_ref, 0);
-        // Many symbols, so the table grows and rehashes by stored hashes.
         let names: Vec<Vec<u8>> = (0..10_000)
             .map(|i| format!("sym{i}").into_bytes())
             .collect();

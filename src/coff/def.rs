@@ -1,5 +1,4 @@
-//! Exports: `/EXPORT:` specifications and module-definition (`.def`) files,
-//! which `rustc` writes for every DLL it links.
+//! `/EXPORT:` specifications and module-definition (`.def`) files.
 
 use super::config::parse_number;
 use crate::diag::Result;
@@ -7,15 +6,14 @@ use crate::{bail, err};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ExportSpec {
-    /// The name other images import.
     pub name: String,
-    /// The symbol it refers to in this image, when it differs from `name`.
     pub internal: Option<String>,
     pub ordinal: Option<u16>,
     pub noname: bool,
     pub data: bool,
     pub private: bool,
     pub constant: bool,
+    pub export_as: Option<String>,
 }
 
 impl ExportSpec {
@@ -39,8 +37,17 @@ pub fn parse_export(spec: &str) -> Result<ExportSpec> {
     if e.name.is_empty() {
         bail!("invalid /EXPORT: '{spec}'");
     }
-    for part in parts {
+    let mut parts = parts.peekable();
+    while let Some(part) = parts.next() {
         let p = part.trim();
+        if p.eq_ignore_ascii_case("exportas") {
+            let name = parts.next().map(str::trim).unwrap_or("");
+            if name.is_empty() {
+                bail!("invalid /EXPORT: '{spec}': EXPORTAS needs a name");
+            }
+            e.export_as = Some(name.to_string());
+            continue;
+        }
         if let Some(ord) = p.strip_prefix('@') {
             e.ordinal = Some(parse_ordinal(ord)?);
             continue;
@@ -78,8 +85,6 @@ pub struct DefFile {
     pub exports: Vec<ExportSpec>,
 }
 
-/// Parse a module-definition file: `LIBRARY`/`NAME`, `EXPORTS`, `HEAPSIZE`,
-/// `STACKSIZE` and `VERSION` (other statements are accepted and ignored).
 pub fn parse_def(text: &str) -> Result<DefFile> {
     let mut def = DefFile::default();
     let mut tokens = tokenize_def(text).into_iter().peekable();
@@ -123,7 +128,6 @@ pub fn parse_def(text: &str) -> Result<DefFile> {
                         }
                         None => e.name = name.clone(),
                     }
-                    // `name = internal` with spaces around the `=`.
                     if tokens.next_if(|t| t == "=").is_some() {
                         e.internal = tokens.next();
                     }
@@ -189,7 +193,6 @@ pub fn parse_def(text: &str) -> Result<DefFile> {
     Ok(def)
 }
 
-/// Words, quoted strings and `=`; `;` starts a comment.
 fn tokenize_def(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -217,7 +220,6 @@ fn tokenize_def(text: &str) -> Vec<String> {
                     if c.is_whitespace() {
                         break;
                     }
-                    // `a=b` stays one token; a lone `=` is handled above.
                     s.push(c);
                     chars.next();
                 }
@@ -241,6 +243,12 @@ mod tests {
         assert_eq!(e.ordinal, Some(7));
         assert!(e.noname && e.data && !e.private);
         assert!(parse_export(",DATA").is_err());
+        let e = parse_export("_MAGIC,DATA,EXPORTAS,MAGIC").unwrap();
+        assert_eq!(
+            (e.name.as_str(), e.export_as.as_deref()),
+            ("_MAGIC", Some("MAGIC"))
+        );
+        assert!(e.data);
         assert!(parse_export("x,@0").is_err());
     }
 

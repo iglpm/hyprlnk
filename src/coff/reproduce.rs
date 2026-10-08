@@ -1,9 +1,4 @@
-//! `/REPRODUCE:<dir>` (or `HYPRLNK_REPRODUCE=<dir>`): copy a link's inputs
-//! into `<dir>/<output>-<pid>/` with a response file that repeats it, for bug reports and
-//! benchmarks (`hyprlnk @dir/link.rsp`, `lld-link @dir/link.rsp`).
-//!
-//! `rustc` deletes some inputs (`symbols.o`) as soon as the link is over, so
-//! this is the way to keep a real link around.
+//! `/REPRODUCE:<dir>` / `HYPRLNK_REPRODUCE`: save a link's inputs and a response file replaying it.
 
 use std::path::{Path, PathBuf};
 
@@ -13,7 +8,6 @@ use crate::diag::Result;
 use crate::err;
 
 pub fn save(root: &Path, args: &[String], cfg: &Config) -> Result<()> {
-    // One directory per link: a build runs many at once.
     let stem = cfg
         .output
         .as_deref()
@@ -23,7 +17,10 @@ pub fn save(root: &Path, args: &[String], cfg: &Config) -> Result<()> {
     let dir = &root.join(format!("{stem}-{}", std::process::id()));
     let io = |e: std::io::Error| err!("/REPRODUCE: {}: {e}", dir.display());
     std::fs::create_dir_all(dir).map_err(io)?;
-    let search = winsdk::search_paths(&cfg.lib_paths);
+    let machine = cfg
+        .machine
+        .unwrap_or_else(|| super::resolve::detect_machine(cfg));
+    let search = winsdk::search_paths(&cfg.lib_paths, machine);
     let find = |name: &str| -> Option<PathBuf> {
         let p = Path::new(name);
         if p.is_absolute() {

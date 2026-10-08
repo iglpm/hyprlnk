@@ -1,15 +1,19 @@
 [package]
 name = "hyprlnk"
-description = "A fast linker, developed with and built into the Rune build system"
+description = "The fastest linker for Windows (x64, ARM64, x86): a drop-in for link.exe and lld-link, built into the Rune build system"
 version = "2027.0.0"
-edition.workspace = true
-license.workspace = true
-rust-version.workspace = true
-repository.workspace = true
-homepage.workspace = true
+edition = "2024"
+license = "MIT OR Apache-2.0"
+rust-version = "1.89"
+repository = "https://github.com/runepm/rune"
+homepage = "https://runepm.com"
+documentation = "https://docs.rs/hyprlnk"
 readme = "README.md"
-keywords = ["linker", "coff", "pe", "lld", "windows"]
+keywords = ["linker", "pdb", "coff", "windows", "lld"]
 categories = ["development-tools::build-utils", "command-line-utilities"]
+# Self-contained on purpose (no `workspace = true`): this directory can be
+# built, published and moved on its own.
+exclude = ["/.github", "/tests/fixtures/big"]
 
 [lib]
 path = "src/lib.rs"
@@ -19,11 +23,11 @@ name = "hyprlnk"
 path = "src/main.rs"
 
 [dependencies]
-rayon.workspace = true
-xxhash-rust.workspace = true
+rayon = "1"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
 hashbrown = { version = "0.17", default-features = false }
 rustc-demangle = "0.1"
 mimalloc = { version = "0.1", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
-libc.workspace = true
+libc = "0.2"

@@ -1,0 +1,92 @@
+name: Bug report
+description: A link fails, hyprlnk crashes, or a linked program misbehaves
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting! The fastest way to a fix is a link we can replay:
+        set `HYPRLNK_REPRODUCE=C:\repro` (or pass `/REPRODUCE:C:\repro`), run the
+        failing build, then zip `C:\repro\<output>-<pid>\` and attach it below
+        (check it contains nothing private first).
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: The error, the crash, or how the program misbehaves.
+      placeholder: "hyprlnk: error: undefined symbol: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+      description: For example, "it links with lld-link / link.exe and runs".
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How do you link?
+      description: The build command, or the linker command line (`rustc` shows it on failure).
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: hyprlnk version
+      description: "`hyprlnk --version`, or `rune --version` when using Rune's built-in linker."
+      placeholder: hyprlnk 2027.0.0
+    validations:
+      required: true
+  - type: dropdown
+    id: machine
+    attributes:
+      label: Target machine
+      multiple: true
+      options:
+        - x64
+        - ARM64
+        - x86
+    validations:
+      required: true
+  - type: dropdown
+    id: driver
+    attributes:
+      label: How is hyprlnk run?
+      options:
+        - Rune (build.linker = "hyprlnk")
+        - Cargo / rustc (-C linker)
+        - Directly
+        - CMake / MSBuild / another build system
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: toolchain
+    attributes:
+      label: Toolchain
+      description: Rust, clang, MSVC and Windows SDK versions, as far as they matter.
+      placeholder: rustc 1.98.1, MSVC 14.44, Windows SDK 10.0.26100
+  - type: dropdown
+    id: other-linkers
+    attributes:
+      label: Does the same link work with lld-link or link.exe?
+      options:
+        - "Yes"
+        - "No"
+        - Didn't try
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Attach the zipped `/REPRODUCE` directory, or explain how to reproduce it.
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: "`/VERBOSE` or `/TIME` output, screenshots, ideas about the cause."

@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Documentation
+    url: https://github.com/runepm/hyprlnk/tree/main/docs
+    about: Getting started, every option, troubleshooting.
+  - name: Report a security vulnerability
+    url: https://github.com/runepm/hyprlnk/security/advisories/new
+    about: Please report security issues privately.
+  - name: Problems with Rune itself
+    url: https://github.com/runepm/rune/issues
+    about: Builds, caching, the test runner — anything but linking.

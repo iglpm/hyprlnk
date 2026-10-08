@@ -7,18 +7,25 @@ use crate::diag::{self, Result};
 use crate::{bail, err};
 
 pub const HELP: &str = "\
-hyprlnk: a fast PE/COFF linker (lld-link compatible command line)
+hyprlnk: the fastest linker for Windows (link.exe / lld-link command line)
 
 USAGE: hyprlnk [options] <inputs...>
 
-Inputs are COFF objects (.obj, .o), archives (.lib, .rlib, .a) and import
-libraries. @file reads more arguments from a response file.
+Inputs are COFF objects (.obj, .o), archives (.lib, .rlib, .a), import
+libraries and resource files (.res). @file reads more arguments from a
+response file. Machines: x64, ARM64, x86.
 
-Common options (case-insensitive, `/` or `-`):
+Output:
   /OUT:<file>              output image
   /DLL                     build a DLL
   /ENTRY:<symbol>          entry point (default: from main/WinMain/DllMain)
   /SUBSYSTEM:<name>[,v]    console, windows, native, efi_application, ...
+  /MACHINE:<x64|arm64|x86> (default: from the first object)
+  /BASE:<addr>  /STACK:<reserve>[,<commit>]  /HEAP:<reserve>[,<commit>]
+  /DYNAMICBASE[:NO]  /NXCOMPAT[:NO]  /HIGHENTROPYVA[:NO]  /LARGEADDRESSAWARE[:NO]
+  /FIXED  /TSAWARE[:NO]  /SAFESEH[:NO]  /TIMESTAMP:<n>  /RELEASE (checksum)
+
+Libraries and symbols:
   /LIBPATH:<dir>           library search directory (then %LIB%)
   /DEFAULTLIB:<lib>        link a library    /NODEFAULTLIB[:<lib>]
   /WHOLEARCHIVE[:<lib>]    load every member of an archive
@@ -26,21 +33,26 @@ Common options (case-insensitive, `/` or `-`):
   /ALTERNATENAME:<a>=<b>   use b where a is undefined
   /MERGE:<from>=<to>       merge output sections
   /EXPORT:<spec>  /DEF:<file>  /IMPLIB:<file>  /NOIMPLIB
-  /OPT:REF|NOREF|ICF|NOICF garbage-collect unreferenced COMDATs (default REF)
-  /BASE:<addr>  /STACK:<reserve>[,<commit>]  /HEAP:<reserve>[,<commit>]
-  /DYNAMICBASE[:NO]  /NXCOMPAT[:NO]  /HIGHENTROPYVA[:NO]  /LARGEADDRESSAWARE[:NO]
-  /FIXED  /TSAWARE[:NO]  /TIMESTAMP:<n>  /RELEASE (checksum)
   /FORCE[:UNRESOLVED|MULTIPLE]
+
+Optimization and debug info:
+  /OPT:REF|NOREF           drop unreferenced COMDATs (default: REF without /DEBUG)
+  /OPT:ICF|NOICF           fold identical code (default: ICF with REF, no /DEBUG)
+  /DEBUG[:NONE]            write a PDB
+  /PDB:<file>  /PDBALTPATH:<path>  /NATVIS:<file>
+
+Diagnostics:
   /TIME                    print how long each phase took
-  /THREADS:<n>             worker threads (default: all cores)
-  /VERBOSE                 explain what is loaded and why
+  /VERBOSE                 explain what is loaded and folded
+  /MAP[:<file>]            write a map file (sections, symbols by address)
   /REPRODUCE:<dir>         copy the inputs and a response file repeating
                            the link to <dir> (also HYPRLNK_REPRODUCE)
+  /THREADS:<n>             worker threads (default: all cores)
   --version                print the version
 
-Accepted for compatibility and ignored: /NOLOGO /INCREMENTAL /DEBUG /PDB
-/PDBALTPATH /NATVIS /MANIFEST* /GUARD /ERRORREPORT /IGNORE /WX /BREPRO and
-others.
+Accepted for compatibility and ignored: /NOLOGO /INCREMENTAL /MANIFEST*
+/GUARD /ERRORREPORT /IGNORE /WX /BREPRO /LTCG and others.
+Documentation: https://github.com/runepm/hyprlnk/tree/main/docs
 ";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +100,6 @@ pub struct Config {
     pub lib_paths: Vec<PathBuf>,
     pub default_libs: Vec<String>,
     pub no_default_lib_all: bool,
-    /// Lower-case file names, `.lib` added when there was no extension.
     pub no_default_libs: Vec<String>,
     pub whole_archive_all: bool,
     pub entry: Option<String>,
@@ -103,16 +114,22 @@ pub struct Config {
     pub heap: (u64, u64),
     pub dynamic_base: bool,
     pub nx_compat: bool,
-    pub large_address_aware: bool,
+    pub large_address_aware: Option<bool>,
+    pub machine: Option<super::arch::Machine>,
+    pub safeseh: Option<bool>,
     pub high_entropy_va: bool,
     pub terminal_server_aware: Option<bool>,
     pub fixed: bool,
     pub appcontainer: bool,
     pub cet_compat: bool,
     pub integrity_check: bool,
-    /// `/OPT:REF` (`Some(true)`) / `/OPT:NOREF`; `None`: on unless `/DEBUG`.
     pub gc: Option<bool>,
+    pub icf: Option<bool>,
     pub debug: bool,
+    pub pdb: Option<PathBuf>,
+    pub pdb_alt_path: Option<String>,
+    pub natvis: Vec<PathBuf>,
+    pub map: Option<Option<PathBuf>>,
     pub includes: Vec<String>,
     pub alternate_names: Vec<(String, String)>,
     pub merges: Vec<(String, String)>,
@@ -132,7 +149,6 @@ pub struct Config {
     pub print_version: bool,
     pub print_help: bool,
     pub mingw: bool,
-    /// `/REPRODUCE:<dir>`: save the inputs and command line there.
     pub reproduce: Option<PathBuf>,
 }
 
@@ -158,7 +174,9 @@ impl Default for Config {
             heap: (1024 * 1024, 4096),
             dynamic_base: true,
             nx_compat: true,
-            large_address_aware: true,
+            large_address_aware: None,
+            machine: None,
+            safeseh: None,
             high_entropy_va: true,
             terminal_server_aware: None,
             fixed: false,
@@ -166,7 +184,12 @@ impl Default for Config {
             cet_compat: false,
             integrity_check: false,
             gc: None,
+            icf: None,
             debug: false,
+            pdb: None,
+            pdb_alt_path: None,
+            natvis: Vec::new(),
+            map: None,
             includes: Vec::new(),
             alternate_names: Vec::new(),
             merges: Vec::new(),
@@ -191,8 +214,7 @@ impl Default for Config {
     }
 }
 
-/// Names of every option this parser knows, so that on Unix a path such as
-/// `/home/me/a.obj` is taken as an input rather than an unknown option.
+/// Every known option, so a Unix path like `/home/me/a.obj` is an input, not an unknown option.
 const KNOWN: &[&str] = &[
     "align",
     "aligncomm",
@@ -367,7 +389,6 @@ impl Config {
                 _ => bail!("missing value for '{arg}'"),
             }
         };
-        // `/FOO` or `/FOO:NO`.
         let yes = || !value.is_some_and(|v| v.eq_ignore_ascii_case("no"));
         match name {
             "out" => self.output = Some(PathBuf::from(need()?)),
@@ -411,7 +432,8 @@ impl Config {
             "heap" => self.heap = parse_pair(need()?, self.heap)?,
             "dynamicbase" => self.dynamic_base = yes(),
             "nxcompat" => self.nx_compat = yes(),
-            "largeaddressaware" => self.large_address_aware = yes(),
+            "largeaddressaware" => self.large_address_aware = Some(yes()),
+            "safeseh" => self.safeseh = Some(yes()),
             "highentropyva" => self.high_entropy_va = yes(),
             "tsaware" => self.terminal_server_aware = Some(yes()),
             "fixed" => self.fixed = yes(),
@@ -423,9 +445,9 @@ impl Config {
                     match part.to_ascii_lowercase().as_str() {
                         "ref" => self.gc = Some(true),
                         "noref" => self.gc = Some(false),
-                        // Identical COMDAT folding is not implemented: links are
-                        // correct without it, just a little bigger.
-                        "icf" | "noicf" | "lbr" | "nolbr" | "safeicf" => {}
+                        "icf" | "safeicf" => self.icf = Some(true),
+                        "noicf" => self.icf = Some(false),
+                        "lbr" | "nolbr" => {}
                         p if p.starts_with("icf=") || p.starts_with("lld") => {}
                         "" => {}
                         p => diag::warn(format!("ignoring unknown /OPT argument '{p}'")),
@@ -435,6 +457,9 @@ impl Config {
             "debug" => {
                 self.debug = !value.is_some_and(|v| v.eq_ignore_ascii_case("none"));
             }
+            "pdb" => self.pdb = Some(PathBuf::from(need()?)),
+            "natvis" => self.natvis.push(PathBuf::from(need()?)),
+            "pdbaltpath" => self.pdb_alt_path = Some(need()?.to_string()),
             "include" => self.includes.push(need()?.to_string()),
             "alternatename" => self.alternate_names.push(parse_assignment(need()?, arg)?),
             "merge" => self.merges.push(parse_assignment(need()?, arg)?),
@@ -469,12 +494,12 @@ impl Config {
             "filealign" => self.file_align = parse_alignment(need()?, arg)?,
             "align" => self.section_align = parse_alignment(need()?, arg)?,
             "release" => self.release_checksum = true,
-            "machine" => match need()?.to_ascii_lowercase().as_str() {
-                "x64" | "amd64" => {}
-                other => {
-                    bail!("/MACHINE:{other} is not supported yet: hyprlnk links x64 images for now")
-                }
-            },
+            "machine" => {
+                let m = need()?;
+                self.machine = Some(super::arch::Machine::parse(m).ok_or_else(|| {
+                    err!("/MACHINE:{m} is not supported: hyprlnk links x64, ARM64 and x86 images")
+                })?);
+            }
             "lldmingw" => self.mingw = true,
             "reproduce" => self.reproduce = Some(PathBuf::from(need()?)),
             "help" | "?" => self.print_help = true,
@@ -483,19 +508,16 @@ impl Config {
                 v()
             )),
             "ltcg" => {}
-            "order" | "map" | "lldmap" => {
+            "map" => self.map = Some(value.filter(|v| !v.is_empty()).map(PathBuf::from)),
+            "order" | "lldmap" => {
                 diag::warn(format!("'{arg}' is not supported yet and is ignored"))
             }
             "driver" | "profile" | "swaprun" | "stub" | "section" | "functionpadmin" => {
                 diag::warn(format!("'{arg}' is not supported yet and is ignored"))
             }
-            // Accepted and ignored: no effect on what hyprlnk writes, or about
-            // outputs it doesn't produce (PDBs, manifests, maps).
+            // Accepted and ignored.
             "nologo"
             | "incremental"
-            | "pdb"
-            | "pdbaltpath"
-            | "natvis"
             | "manifest"
             | "manifestuac"
             | "manifestfile"
@@ -510,7 +532,6 @@ impl Config {
             | "errorlimit"
             | "debugtype"
             | "failifmismatch"
-            | "safeseh"
             | "allowbind"
             | "allowisolation"
             | "dependentloadflag"
@@ -555,14 +576,11 @@ impl Config {
     }
 }
 
-/// Split `/NAME:value` or `-name:value` into a lower-case name and the value;
-/// `None` for inputs.
 fn option(arg: &str) -> Option<(String, Option<&str>)> {
     let body = if let Some(rest) = arg.strip_prefix("--").or_else(|| arg.strip_prefix('-')) {
         rest
     } else {
         let rest = arg.strip_prefix('/')?;
-        // On Unix, `/path/to/file.obj` is an input.
         let name = rest.split(':').next().unwrap_or("").to_ascii_lowercase();
         if !cfg!(windows) && !KNOWN.contains(&name.as_str()) && Path::new(arg).exists() {
             return None;
@@ -579,8 +597,6 @@ fn option(arg: &str) -> Option<(String, Option<&str>)> {
     Some((name.to_ascii_lowercase(), value))
 }
 
-/// The key libraries are compared by: the lower-case file name, with `.lib`
-/// added when it has no extension.
 pub fn lib_key(name: &str) -> String {
     // Both separators on every host: Windows paths reach Unix hosts in
     // cross links.
@@ -592,8 +608,6 @@ pub fn lib_key(name: &str) -> String {
     key
 }
 
-/// A number the way `link.exe` reads one: `0x` hex, leading-zero octal, or
-/// decimal.
 pub fn parse_number(s: &str) -> Result<u64> {
     let s = s.trim();
     let r = if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {

@@ -1,146 +1,142 @@
+<div align="center">
+
 # hyprlnk
 
-**hyprlnk** ("hyperlink") is a linker developed together with Rune and built
-into it. The goal is to link faster than lld, and to need nothing installed
-beyond the platform's libraries.
+**The fastest linker for Windows.**
 
-It is a Rust library first (`hyprlnk::main_with_args`, `hyprlnk::coff::link`)
-with a small `hyprlnk` executable on top. Rune links with the copy compiled
-into its own executable.
+A drop-in replacement for `link.exe` and `lld-link`: x64, ARM64 and x86,
+executables and DLLs, PDB debug info included — about twice as fast as lld.
 
-## Status
+Built for [Rune](https://runepm.com), usable by everyone.
 
-The first backend links **PE/COFF for x86-64 Windows**: executables and DLLs,
-from `link.exe`/`lld-link` command lines, which is what `rustc` passes on
-`*-windows-msvc` targets. It links Rust (debug and release, unwinding,
-thread-locals, proc-macros, `cdylib`s with import libraries), C and C++ (MSVC
-exceptions, static constructors, the static and DLL C runtimes). Rune's own
-test suite passes with every test binary linked by it.
+```powershell
+rune build                          # with build.linker = "hyprlnk"
+rustc -C linker=hyprlnk main.rs     # or with any toolchain that runs link.exe
+```
 
-| | |
-| --- | --- |
-| Inputs | COFF objects (regular and `/bigobj`), archives (rlibs, `.lib`, GNU/BSD `.a`), short and long import libraries, `.def` files, `@response` files (UTF-8/UTF-16) |
-| Resolution | lazy archive members, COMDAT selection (any, no-duplicates, largest, associative), weak externals, `/ALTERNATENAME`, common symbols, `/DEFAULTLIB` and the rest of `.drectve`, locally defined `__imp_` symbols, `/FAILIFMISMATCH` |
-| Output | `/OPT:REF` garbage collection, link.exe's section grouping and ordering, import tables and thunks, exports and import libraries, base relocations, sorted exception table, TLS and load configuration directories, deterministic timestamp, `/RELEASE` checksum |
-| Diagnostics | undefined and duplicate symbols with the files involved (Rust names demangled), `/TIME`, `/VERBOSE`, `/REPRODUCE` |
+</div>
 
-Not yet: PDB debug info, identical code folding (`/OPT:ICF` is accepted and
-ignored, so release binaries are somewhat larger than lld's), resources
-(`.res`), delay-loaded imports, LTO inputs (bitcode), x86 and ARM64, and the
-ELF and Mach-O backends. See [the roadmap](#roadmap).
+---
 
-## Using it
+## Why hyprlnk
 
-**From Rune** (`Rune.toml`, `~/.rune/config.toml` or `RUNE_BUILD_LINKER`):
+Every Rust, C and C++ build on Windows ends the same way: the linker reads
+hundreds of megabytes of objects and writes an executable and a PDB. It runs
+after every edit, and nothing else can start until it is done. hyprlnk makes
+that wait as short as possible.
+
+| Linking Rune itself (dev build: 2,337 objects, 715 MB of input) | hyprlnk | lld-link 22 |
+| --- | ---: | ---: |
+| Executable only | **440 ms** | 845 ms |
+| Executable + PDB (what `rustc` asks for by default) | **1.09 s** | 1.93 s |
+| … on a single thread | 1.95 s | — |
+
+hyprlnk on **one** thread keeps pace with lld on twelve. The output is the
+same size as lld's (the PDB 0.15 % smaller), byte-for-byte reproducible, and
+passes Rune's whole test suite. [How it was measured →](docs/performance.md)
+
+## What makes it fast
+
+- **Zero-copy inputs.** Objects and libraries are memory-mapped and parsed in
+  place; only section headers and external symbols are decoded up front.
+- **Parallel everywhere.** Inputs are parsed in waves on all cores, symbol
+  names are hashed and looked up on the parsing threads, garbage collection
+  marks frontier by frontier, sections are copied and relocated in batches,
+  and the exception table is sorted in parallel.
+- **The PDB is built while the image is written** — not after it.
+- **Type merging without locks.** Every type record gets a content hash on its
+  own object's thread; duplicates collapse in a lock-free table; final
+  indices come from prefix sums. 2.4 million type records from 2,335 objects
+  merge in about 110 ms.
+- **No wasted copies, no teardown.** The output is built inside a
+  memory-mapped file, and the process exits without unmapping its inputs or
+  freeing millions of small allocations one by one.
+
+## Everything a Windows build needs
+
+| | x64 | ARM64 | x86 |
+| --- | :---: | :---: | :---: |
+| Executables, DLLs, import libraries | ✅ | ✅ | ✅ |
+| Rust (`*-pc-windows-msvc`), C and C++ (clang-cl, MSVC objects) | ✅ | ✅ | ✅ |
+| PDB: symbols, types, line tables, natvis visualizers | ✅ | ✅ | ✅ |
+| `/OPT:REF` garbage collection, `/OPT:ICF` code folding | ✅ | ✅ | ✅ |
+| Resources (`.res`: icons, manifests, version info) | ✅ | ✅ | ✅ |
+| Exceptions & unwinding, thread-local storage, load config | ✅ | ✅ | ✅ (SafeSEH) |
+| Exports, `.def` files, `/WHOLEARCHIVE`, `/ALTERNATENAME`, … | ✅ | ✅ | ✅ |
+
+It reads what Windows toolchains produce — COFF objects (including
+`/bigobj`), rlibs and static libraries, short and long import libraries,
+`.res` and `.def` files, UTF-8 and UTF-16 response files — and finds the MSVC
+and Windows SDK libraries by itself when `%LIB%` isn't set.
+
+- **Reproducible.** The same inputs give the same image and PDB, byte for
+  byte; the timestamp and PDB GUID are content hashes.
+- **Debuggable.** PDBs follow the layout Microsoft's tools read: `dbghelp`
+  (the engine behind WinDbg and Rust's backtraces) resolves names, files and
+  lines from them, LLVM's PDB tools read every record, and Rust's natvis
+  visualizers are embedded for Visual Studio and VS Code.
+- **Explains itself.** `/TIME` shows where every millisecond went, `/VERBOSE`
+  what was loaded and folded, and `/REPRODUCE:<dir>` packs a link into a
+  directory you can replay — or attach to a bug report.
+
+## Get started
+
+**With Rune** — in `Rune.toml`, `~/.rune/config.toml`, or `RUNE_BUILD_LINKER`:
 
 ```toml
 [build]
 linker = "hyprlnk"
 ```
 
-Rune then passes its own executable to `rustc` as the linker and sets
-`RUNE_HYPRLNK` on the compiler, so that executable links. The cache key of
-everything it links names the hyprlnk version, so updating hyprlnk relinks,
-and switching linkers back and forth comes from the cache. Targets hyprlnk
-can't link yet keep their usual linker. `rune __hyprlnk <args>` runs the
-built-in linker by hand.
+Nothing to install: the linker is built into `rune`.
 
-**Standalone**, build it with Rune and point `rustc` (or anything that runs
-`link.exe`) at it:
+**With Cargo** — build hyprlnk, then in `.cargo/config.toml`:
 
-```sh
-rune build -p hyprlnk --release
-rustc -C linker=.rune/target/release/hyprlnk.exe main.rs
-hyprlnk /OUT:app.exe main.obj util.obj kernel32.lib
+```toml
+[target.x86_64-pc-windows-msvc]
+linker = "C:\\tools\\hyprlnk.exe"
+
+[target.aarch64-pc-windows-msvc]
+linker = "C:\\tools\\hyprlnk.exe"
 ```
 
-When `%LIB%` isn't set, hyprlnk finds the newest installed MSVC toolset and
-Windows SDK by itself.
+**Anywhere else** — it takes `link.exe` command lines:
 
-## Speed
+```powershell
+hyprlnk /OUT:app.exe /DEBUG main.obj util.obj user32.lib
+cmake -G Ninja -DCMAKE_LINKER=hyprlnk.exe ..
+```
 
-Linking Rune itself (dev profile: 2,337 objects from 221 archives, 715 MB of
-input, a 32 MB executable) on a 12-thread Windows machine, best of 7, wall
-time including about 70 ms of process startup each:
+**Build it**: `rune build -p hyprlnk --release` (or `cargo build --release`)
+in this directory. [Installation and integration guide →](docs/getting-started.md)
 
-| Linker | Time |
-| --- | ---: |
-| **hyprlnk** | **339 ms** |
-| hyprlnk `/THREADS:1` | 599 ms |
-| lld-link 22, `/DEBUG:NONE` | 781 ms |
-| rust-lld, `/DEBUG:NONE` | 791 ms |
-| lld-link 22 writing a PDB (what `rustc` asks for by default) | 1,835 ms |
-
-The fair comparison is against lld without a PDB, since hyprlnk doesn't write
-one. Reproduce it with `/REPRODUCE:<dir>` (below) and
-`hyprlnk @<dir>/link.rsp` vs `lld-link @<dir>/link.rsp /DEBUG:NONE`; `/TIME`
-shows where the time goes.
-
-Where the speed comes from:
-
-- **Nothing is copied that needn't be.** Inputs are memory-mapped and parsed
-  in place; only section headers and external symbols are decoded up front.
-  The output is built directly in a memory-mapped file.
-- **Parallel waves.** Everything waiting to be loaded is parsed on all
-  threads at once, then merged in a fixed order (deterministic output). Each
-  name is hashed (xxh3) and looked up in the global table on the parsing
-  threads, so the one sequential step only handles genuinely new symbols.
-- **Parallel everywhere else that counts:** garbage collection marks
-  frontier by frontier, sections are copied and relocated in batches on all
-  threads, and the exception table is sorted in parallel.
-- **No teardown.** As a process (or inside Rune's), hyprlnk exits without
-  unmapping its inputs or freeing its memory piece by piece: on Rune's link
-  that alone was a quarter of the wall time.
-
-## Layout
+## Documentation
 
 | | |
 | --- | --- |
-| `src/lib.rs` | public API, flavor dispatch (`-flavor`, program name) |
-| `src/fileio.rs` | input mapping, the arena that owns inputs, the output file |
-| `src/cmdline.rs` | response files and Windows command-line quoting |
-| `src/archive.rs` | `ar` reader (symbol tables, long names) and writer |
-| `src/coff/config.rs` | `link.exe` options |
-| `src/coff/object.rs` | COFF objects |
-| `src/coff/import.rs` | short import objects |
-| `src/coff/symtab.rs` | the global symbol table |
-| `src/coff/resolve.rs` | loading inputs, symbol resolution, COMDATs, directives |
-| `src/coff/gc.rs` | which sections are written (`/OPT:REF`) |
-| `src/coff/synth.rs` | import tables, thunks, exports, common symbols |
-| `src/coff/layout.rs` | output sections and addresses |
-| `src/coff/write.rs` | relocation, base relocations, PE headers |
-| `src/coff/implib.rs` | import libraries for DLLs |
-| `src/coff/def.rs` | `/EXPORT` and `.def` files |
-| `src/coff/reproduce.rs` | `/REPRODUCE` |
-| `src/coff/winsdk.rs` | library search paths, MSVC/SDK discovery |
+| [Getting started](docs/getting-started.md) | install, use with Rune, Cargo, rustc, CMake, clang-cl |
+| [Command line](docs/command-line.md) | every option |
+| [Debug info (PDB)](docs/pdb.md) | what goes in, how it's built, natvis, determinism |
+| [Performance](docs/performance.md) | benchmarks, methodology, where the time goes |
+| [Compatibility](docs/compatibility.md) | inputs, features, differences from `link.exe`/`lld-link` |
+| [Architecture](docs/architecture.md) | how the linker is put together |
+| [Troubleshooting](docs/troubleshooting.md) | errors, `/VERBOSE`, `/REPRODUCE`, reporting bugs |
+| [Roadmap](docs/roadmap.md) | what's next: ELF, Mach-O, and more |
 
-## Testing
+## Status
 
-`rune test -p hyprlnk` runs the unit tests everywhere and, on Windows with
-the MSVC libraries installed, end-to-end tests that link programs with
-`rustc -C linker=hyprlnk` and run them (unwinding, threads, thread-locals,
-DLLs and import libraries, error messages, reproducible output).
+hyprlnk links PE/COFF images for Windows on x64, ARM64 and x86. It links
+Rune — 250 crates, build scripts, tests — and Rune's test suite
+passes with every binary linked by it. ELF (Linux) and Mach-O (macOS)
+backends are next on the [roadmap](docs/roadmap.md).
 
-For a real-world check, build Rune with itself and run its test suite:
+## Contributing
 
-```sh
-RUNE_BUILD_LINKER=hyprlnk rune test --workspace
-```
+Bug reports with a `/REPRODUCE` archive, benchmarks on your projects, and pull
+requests are all welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) and the
+[code of conduct](CODE_OF_CONDUCT.md).
 
-`/REPRODUCE:<dir>` (or `HYPRLNK_REPRODUCE=<dir>`, which also reaches links
-run by `rustc` under Rune) copies a link's inputs to
-`<dir>/<output>-<pid>/` with a `link.rsp` that repeats it: the way to keep
-a link that misbehaves, and to benchmark against other linkers.
+## License
 
-## Roadmap
-
-1. **ELF** (`ld.hyprlnk`, GNU flavor), so Rune's main platforms get it:
-   static and dynamic executables and shared objects for x86-64 and AArch64
-   Linux, driven through `cc -fuse-ld`.
-2. **Identical code folding** for smaller release binaries.
-3. **PDB** output, so debuggers see hyprlnk-linked binaries' symbols.
-4. Resources, delay-loading, ARM64 Windows.
-5. **Mach-O.**
-6. Faster still: parallel symbol resolution and section layout, and
-   incremental relinking inside Rune (keeping the previous link's state
-   between builds).
+Dual-licensed under [MIT](LICENSE-MIT.md) or [Apache 2.0](LICENSE-APACHE.md), at
+your option.

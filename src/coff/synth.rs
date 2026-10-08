@@ -1,9 +1,4 @@
-//! Data the linker makes: space for common symbols, the import tables and the
-//! thunks that call imports, pointers for `__imp_` references to local
-//! symbols, and the export table.
-//!
-//! Sizes and offsets are decided here, before the layout; the bytes are
-//! written by `write` once addresses are known.
+//! Linker-made data: commons, import tables and thunks, local `__imp_` pointers, exports.
 
 use std::collections::HashMap;
 use std::sync::atomic::Ordering::Relaxed;
@@ -24,10 +19,10 @@ pub const IDATA_DLLS: usize = 5;
 pub const THUNKS: usize = 6;
 pub const LOCAL_IMPORTS: usize = 7;
 pub const EDATA: usize = 8;
-pub const NUM_CHUNKS: usize = 9;
-
-/// Each thunk is `jmp qword ptr [rip + disp32]`, padded to 8 bytes.
-pub const THUNK_SIZE: u32 = 8;
+pub const SAFESEH: usize = 9;
+pub const RSRC: usize = 10;
+pub const DEBUG_DIR: usize = 11;
+pub const NUM_CHUNKS: usize = 12;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct SynthChunk {
@@ -40,18 +35,14 @@ pub struct SynthChunk {
 pub struct DllImports<'a> {
     pub name: &'a [u8],
     pub imports: Vec<u32>,
-    /// Offset of this DLL's block in the lookup and address tables.
     pub table_off: u32,
-    /// Offset of its name in the DLL-name chunk.
     pub name_off: u32,
 }
 
 pub struct Edata {
     pub dll_name: String,
     pub base: u32,
-    /// The symbol each ordinal (from `base`) exports.
     pub functions: Vec<Option<SymId>>,
-    /// Named exports, sorted by name, with their ordinal minus `base`.
     pub names: Vec<(String, u16)>,
     pub eat_off: u32,
     pub name_ptrs_off: u32,
@@ -64,7 +55,6 @@ impl Linker<'_> {
     pub fn create_synthetic(&mut self) -> Result<()> {
         self.synth = vec![SynthChunk::default(); NUM_CHUNKS];
 
-        // Common symbols, the most aligned first.
         let mut commons: Vec<(u32, SymId, u32)> = Vec::new();
         for (id, s) in self.symtab.syms.iter().enumerate() {
             if let Def::Common { size, .. } = s.def {
@@ -91,18 +81,86 @@ impl Linker<'_> {
         };
 
         self.create_imports();
+        let ptr = self.machine.ptr_size();
         self.synth[LOCAL_IMPORTS] = SynthChunk {
-            size: self.local_imports.len() as u32 * 8,
-            align: 8,
+            size: self.local_imports.len() as u32 * ptr,
+            align: ptr,
             ..Default::default()
         };
         self.create_exports()?;
+        self.create_safeseh()?;
+        self.create_resources()?;
+        self.create_debug_directory();
+        Ok(())
+    }
+
+    fn create_safeseh(&mut self) -> Result<()> {
+        if self.machine != super::arch::Machine::X86 || self.cfg.safeseh == Some(false) {
+            return Ok(());
+        }
+        let incompatible = self.objs.iter().find(|o| {
+            o.machine == IMAGE_FILE_MACHINE_I386
+                && o.feat00 & 1 == 0
+                && o.sections
+                    .iter()
+                    .any(|s| s.is_live() && s.chars & IMAGE_SCN_CNT_CODE != 0)
+        });
+        if let Some(o) = incompatible {
+            if self.cfg.safeseh == Some(true) {
+                bail!("/SAFESEH: {} is not compatible with SafeSEH", o.name);
+            }
+            return Ok(());
+        }
+        let mut handlers = std::collections::BTreeSet::new();
+        for (oi, o) in self.objs.iter().enumerate() {
+            for idx in o.sxdata.as_chunks::<4>().0 {
+                let idx = u32::from_le_bytes(*idx);
+                let def = match o.sym_ids.get(idx as usize) {
+                    Some(&id) if id != super::object::NONE => self.symtab.get(id).def,
+                    _ => match o.raw_sym(idx) {
+                        Some(r) if r.section > 0 => Def::Defined {
+                            obj: oi as u32,
+                            sec: (r.section - 1) as u32,
+                            value: r.value,
+                        },
+                        _ => continue,
+                    },
+                };
+                if let Def::Defined { obj, sec, value } = def
+                    && self.objs[obj as usize].sections[sec as usize].is_live()
+                {
+                    handlers.insert((obj, sec, value));
+                }
+            }
+        }
+        self.seh_handlers = handlers.into_iter().collect();
+        self.synth[SAFESEH] = SynthChunk {
+            size: self.seh_handlers.len() as u32 * 4,
+            align: 4,
+            ..Default::default()
+        };
+        let count = self.seh_handlers.len() as u64;
+        for (name, def) in [
+            (
+                "___safe_se_handler_table",
+                Def::Synthetic {
+                    chunk: SAFESEH as u8,
+                    off: 0,
+                },
+            ),
+            ("___safe_se_handler_count", Def::Absolute { va: count }),
+        ] {
+            if let Some(id) = self.symtab.find(name.as_bytes()) {
+                let s = self.symtab.get_mut(id);
+                if s.replaceable {
+                    s.def = def;
+                }
+            }
+        }
         Ok(())
     }
 
     fn create_imports(&mut self) {
-        // Group the imports that are used by DLL, DLLs in the order they are
-        // first seen.
         let mut by_dll: HashMap<Vec<u8>, usize> = HashMap::new();
         let mut dlls: Vec<DllImports> = Vec::new();
         for (i, imp) in self.imports.iter().enumerate() {
@@ -122,6 +180,19 @@ impl Linker<'_> {
             dlls[d].imports.push(i as u32);
         }
 
+        for dll in &mut dlls {
+            let imports = &self.imports;
+            dll.imports.sort_by(|&a, &b| {
+                let (a, b) = (&imports[a as usize], &imports[b as usize]);
+                (a.name.is_none(), a.name, a.ordinal_or_hint).cmp(&(
+                    b.name.is_none(),
+                    b.name,
+                    b.ordinal_or_hint,
+                ))
+            });
+        }
+        let ptr = self.machine.ptr_size();
+        let thunk_size = self.machine.thunk_size();
         let mut table = 0u32;
         let mut hints = 0u32;
         let mut names = 0u32;
@@ -132,17 +203,17 @@ impl Linker<'_> {
             names += align_up(dll.name.len() as u64 + 1, 2) as u32;
             for (j, &i) in dll.imports.iter().enumerate() {
                 let imp = &mut self.imports[i as usize];
-                imp.iat_off = table + j as u32 * 8;
+                imp.iat_off = table + j as u32 * ptr;
                 if let Some(name) = imp.name {
                     imp.hint_off = hints;
                     hints += align_up(2 + name.len() as u64 + 1, 2) as u32;
                 }
                 if imp.thunk_live.load(Relaxed) {
                     imp.thunk_off = thunks;
-                    thunks += THUNK_SIZE;
+                    thunks = align_up((thunks + thunk_size) as u64, 8) as u32;
                 }
             }
-            table += (dll.imports.len() as u32 + 1) * 8;
+            table += (dll.imports.len() as u32 + 1) * ptr;
         }
         let chunk = |size: u32, align: u32| SynthChunk {
             size,
@@ -151,8 +222,8 @@ impl Linker<'_> {
         };
         if !dlls.is_empty() {
             self.synth[IDATA_DIR] = chunk((dlls.len() as u32 + 1) * 20, 4);
-            self.synth[IDATA_ILT] = chunk(table, 8);
-            self.synth[IDATA_IAT] = chunk(table, 8);
+            self.synth[IDATA_ILT] = chunk(table, ptr);
+            self.synth[IDATA_IAT] = chunk(table, ptr);
             self.synth[IDATA_HINTS] = chunk(hints, 2);
             self.synth[IDATA_DLLS] = chunk(names, 2);
         }
@@ -164,8 +235,6 @@ impl Linker<'_> {
         if self.exports.is_empty() {
             return Ok(());
         }
-        // Ordinals: explicit ones stay; the others follow the highest
-        // explicit one, in name order.
         let mut order: Vec<usize> = (0..self.exports.len()).collect();
         order.sort_by(|&a, &b| self.exports[a].name.cmp(&self.exports[b].name));
         let mut max = self.exports.iter().map(|e| e.ordinal).max().unwrap_or(0);
@@ -222,5 +291,15 @@ impl Linker<'_> {
             strings_off,
         });
         Ok(())
+    }
+}
+
+impl Linker<'_> {
+    fn create_resources(&mut self) -> Result<()> {
+        super::rsrc::create(self)
+    }
+
+    fn create_debug_directory(&mut self) {
+        super::pdb::create_debug_directory(self);
     }
 }

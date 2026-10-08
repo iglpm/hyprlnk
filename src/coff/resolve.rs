@@ -1,11 +1,4 @@
-//! Inputs and symbol resolution.
-//!
-//! Work proceeds in waves: everything waiting to be loaded (command-line
-//! objects first, then the archive members their undefined symbols pull in,
-//! then what those pull in, ...) is parsed in parallel, then merged into the
-//! symbol table in a fixed order, so the result never depends on thread
-//! timing. Libraries named by `/DEFAULTLIB` directives are loaded between
-//! waves.
+//! Inputs and symbol resolution: parallel parsing in waves, merged in a fixed order for determinism.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -14,6 +7,7 @@ use std::time::{Duration, Instant};
 
 use rayon::prelude::*;
 
+use super::arch::Machine;
 use super::config::{Config, Subsystem, lib_key, parse_assignment};
 use super::def::{ExportSpec, parse_export};
 use super::import::ShortImport;
@@ -26,8 +20,7 @@ use crate::diag::{self, Result, Timer};
 use crate::fileio::{self, Arena};
 use crate::{bail, err};
 
-/// Symbols the MSVC C runtime's load configuration refers to, which the
-/// linker defines (as zero when the feature, e.g. Control Flow Guard, is off).
+/// Symbols the MSVC CRT's load configuration needs; the linker defines them as zero.
 const LINKER_DEFAULTS: &[&str] = &[
     "__guard_fids_count",
     "__guard_fids_table",
@@ -49,14 +42,10 @@ pub struct ArchiveFile<'a> {
 pub struct Import<'a> {
     pub dll: &'a [u8],
     pub kind: u8,
-    /// Imported by name, or (`None`) by ordinal.
     pub name: Option<&'a [u8]>,
     pub ordinal_or_hint: u16,
-    /// Referenced by something written: gets an import table entry.
     pub live: AtomicBool,
-    /// Called directly by name: also gets a jump thunk.
     pub thunk_live: AtomicBool,
-    /// Offset of its slot in the import address (and lookup) table.
     pub iat_off: u32,
     pub hint_off: u32,
     pub thunk_off: u32,
@@ -72,8 +61,6 @@ pub struct Export {
     pub private: bool,
 }
 
-/// A mapped input: its bytes and, for an archive, the parsed archive and the
-/// hashes of its symbol names.
 type Loaded<'a> = (&'a [u8], Option<Archive<'a>>, Vec<u64>);
 
 #[derive(Default)]
@@ -84,7 +71,6 @@ struct RunStats {
     libs: Duration,
 }
 
-/// Adds the time until it is dropped to a total.
 struct Accumulate<'t>(&'t mut Duration, Instant);
 
 impl Drop for Accumulate<'_> {
@@ -112,20 +98,22 @@ pub struct Linker<'a> {
     pub imports: Vec<Import<'a>>,
     pub symtab: SymbolTable<'a>,
     pub exports: Vec<Export>,
-    /// Targets of the pointers made for `__imp_` references to symbols
-    /// defined in the image.
     pub local_imports: Vec<SymId>,
     pub gc_roots: Vec<SymId>,
     pub merges: BTreeMap<String, String>,
     pub entry: Option<SymId>,
     pub subsystem: Option<Subsystem>,
+    pub machine: Machine,
     pub image_base: u64,
-    // Filled in by `synth` and `layout`.
     pub synth: Vec<SynthChunk>,
     pub dlls: Vec<DllImports<'a>>,
     pub edata: Option<Edata>,
     pub out_rvas: Vec<u32>,
     pub tls_align: u32,
+    pub seh_handlers: Vec<(u32, u32, u32)>,
+    pub resources: Vec<(String, &'a [u8])>,
+    pub rsrc: Option<super::rsrc::Rsrc>,
+    pub pdb: Option<super::pdb::PdbPlan>,
 
     pending: Vec<Pending<'a>>,
     pending_libs: Vec<String>,
@@ -145,16 +133,14 @@ pub struct Linker<'a> {
 
 impl<'a> Linker<'a> {
     pub fn new(cfg: Config, arena: &'a Arena) -> Linker<'a> {
-        let image_base = cfg.image_base.unwrap_or(if cfg.dll {
-            0x1_8000_0000
-        } else {
-            0x1_4000_0000
-        });
+        let machine = cfg.machine.unwrap_or_else(|| detect_machine(&cfg));
+        let image_base = cfg
+            .image_base
+            .unwrap_or_else(|| machine.default_image_base(cfg.dll));
         let mut merges = BTreeMap::new();
         for (from, to) in &cfg.merges {
             merges.insert(from.clone(), to.clone());
         }
-        // Defaults after the command line's, which take precedence.
         for (from, to) in [
             (".idata", ".rdata"),
             (".didat", ".rdata"),
@@ -179,7 +165,8 @@ impl<'a> Linker<'a> {
             }
         }
         Linker {
-            search_paths: winsdk::search_paths(&cfg.lib_paths),
+            search_paths: winsdk::search_paths(&cfg.lib_paths, machine),
+            machine,
             no_default_all: cfg.no_default_lib_all,
             no_default_libs: cfg.no_default_libs.iter().cloned().collect(),
             alternate_names: cfg.alternate_names.clone(),
@@ -201,6 +188,10 @@ impl<'a> Linker<'a> {
             edata: None,
             out_rvas: Vec::new(),
             tls_align: 0,
+            seh_handlers: Vec::new(),
+            resources: Vec::new(),
+            rsrc: None,
+            pdb: None,
             pending: Vec::new(),
             pending_libs: Vec::new(),
             visited_libs: HashSet::new(),
@@ -214,25 +205,22 @@ impl<'a> Linker<'a> {
         }
     }
 
-    /// A copy of `s` that lives as long as the link.
     fn bytes(&self, s: &[u8]) -> &'a [u8] {
         let arena: &'a Arena = self.arena;
         arena.alloc(s.to_vec())
     }
 
-    // ------------------------------------------------------------------
-    // The resolution loop
-    // ------------------------------------------------------------------
-
     pub fn resolve(&mut self, timer: &mut Timer) -> Result<()> {
-        let (ib, _) = self
-            .symtab
-            .intern(b"__ImageBase", hash_name(b"__ImageBase"), NONE);
+        let image_base = self.bytes(self.machine.mangle("__ImageBase").as_bytes());
+        let (ib, _) = self.symtab.intern(image_base, hash_name(image_base), NONE);
         self.symtab.get_mut(ib).def = Def::ImageBase;
-        for name in LINKER_DEFAULTS {
-            let (id, _) = self
-                .symtab
-                .intern(name.as_bytes(), hash_name(name.as_bytes()), NONE);
+        let mut defaults: Vec<&str> = LINKER_DEFAULTS.to_vec();
+        if self.machine == Machine::X86 {
+            defaults.extend(["__safe_se_handler_table", "__safe_se_handler_count"]);
+        }
+        for name in defaults {
+            let name = self.bytes(self.machine.mangle(name).as_bytes());
+            let (id, _) = self.symtab.intern(name, hash_name(name), NONE);
             let s = self.symtab.get_mut(id);
             s.def = Def::Absolute { va: 0 };
             s.replaceable = true;
@@ -242,7 +230,7 @@ impl<'a> Linker<'a> {
             self.add_root(&name);
         }
         if let Some(entry) = self.entry_name.clone() {
-            self.entry = Some(self.add_root(&entry));
+            self.entry = Some(self.add_root(&self.machine.mangle(&entry)));
         }
         for spec in self.cfg.exports.clone() {
             self.add_export(spec);
@@ -285,7 +273,6 @@ impl<'a> Linker<'a> {
         Ok(())
     }
 
-    /// Load everything pending until nothing is.
     fn run(&mut self, stats: &mut RunStats) -> Result<()> {
         loop {
             if !self.pending_libs.is_empty() {
@@ -316,8 +303,6 @@ impl<'a> Linker<'a> {
         }
     }
 
-    /// What the linker adds once the inputs are in: the entry point, the
-    /// load configuration, `/ALTERNATENAME` fallbacks. Each may load more.
     fn after_run(&mut self) {
         if !self.entry_inferred {
             self.entry_inferred = true;
@@ -328,16 +313,15 @@ impl<'a> Linker<'a> {
                 && !self.cfg.no_entry
                 && let Some(name) = self.infer_entry()
             {
-                self.entry = Some(self.add_root(name));
-                self.entry_name = Some(name.to_string());
+                self.entry = Some(self.add_root(&name));
+                self.entry_name = Some(name);
             }
         }
-        // The CRT's `_load_config_used` describes the image to the loader
-        // (security cookie, CFG): link it whenever a library offers it, as
-        // link.exe does.
-        if !self.load_config_rooted && self.symtab.find(b"_load_config_used").is_some() {
+        // The CRT's `_load_config_used` is linked whenever a library offers it, as link.exe does.
+        let load_config = self.machine.mangle("_load_config_used");
+        if !self.load_config_rooted && self.symtab.find(load_config.as_bytes()).is_some() {
             self.load_config_rooted = true;
-            self.add_root("_load_config_used");
+            self.add_root(&load_config);
         }
         for (from, to) in self.alternate_names.clone() {
             let Some(id) = self.symtab.find(from.as_bytes()) else {
@@ -352,9 +336,27 @@ impl<'a> Linker<'a> {
     }
 
     fn has(&self, name: &str) -> bool {
+        let mangled = self.machine.mangle(name);
+        let defined = |id: SymId| !self.symtab.get(id).def.is_undefined();
+        if self.symtab.find(mangled.as_bytes()).is_some_and(defined) {
+            return true;
+        }
+        self.machine == Machine::X86
+            && self
+                .find_decorated(&format!("{mangled}@"))
+                .is_some_and(defined)
+    }
+
+    fn find_decorated(&self, prefix: &str) -> Option<SymId> {
         self.symtab
-            .find(name.as_bytes())
-            .is_some_and(|id| !self.symtab.get(id).def.is_undefined())
+            .syms
+            .iter()
+            .position(|s| s.name.starts_with(prefix.as_bytes()) && s.def.is_defined())
+            .map(|i| i as SymId)
+    }
+
+    pub fn special(&self, name: &str) -> Option<SymId> {
+        self.symtab.find(self.machine.mangle(name).as_bytes())
     }
 
     fn infer_subsystem(&self) -> Subsystem {
@@ -368,30 +370,28 @@ impl<'a> Linker<'a> {
         }
     }
 
-    fn infer_entry(&self) -> Option<&'static str> {
+    fn infer_entry(&self) -> Option<String> {
+        let m = self.machine;
         if self.cfg.dll {
-            return Some("_DllMainCRTStartup");
+            return Some(if m == Machine::X86 {
+                "__DllMainCRTStartup@12".to_string()
+            } else {
+                "_DllMainCRTStartup".to_string()
+            });
         }
-        if self.subsystem == Some(Subsystem::Windows) {
-            if self.has("wWinMain") {
-                return Some("wWinMainCRTStartup");
-            }
-            if self.has("WinMain") {
-                return Some("WinMainCRTStartup");
-            }
-        }
-        if self.has("wmain") {
-            return Some("wmainCRTStartup");
-        }
-        if self.has("main") {
-            return Some("mainCRTStartup");
-        }
-        None
+        let name = if self.subsystem == Some(Subsystem::Windows) && self.has("wWinMain") {
+            "wWinMainCRTStartup"
+        } else if self.subsystem == Some(Subsystem::Windows) && self.has("WinMain") {
+            "WinMainCRTStartup"
+        } else if self.has("wmain") {
+            "wmainCRTStartup"
+        } else if self.has("main") {
+            "mainCRTStartup"
+        } else {
+            return None;
+        };
+        Some(m.mangle(name))
     }
-
-    // ------------------------------------------------------------------
-    // Files
-    // ------------------------------------------------------------------
 
     fn find_file(&self, name: &str) -> Option<PathBuf> {
         let p = Path::new(name);
@@ -476,7 +476,6 @@ impl<'a> Linker<'a> {
         dirs.join(", ")
     }
 
-    /// Map files in parallel, then add them in order.
     fn load_files(&mut self, files: Vec<(PathBuf, bool)>) -> Result<()> {
         let arena: &'a Arena = self.arena;
         let loaded: Vec<Result<Loaded<'a>>> = files
@@ -513,6 +512,10 @@ impl<'a> Linker<'a> {
                 self.pending.push(Pending::Object { data, name });
                 Ok(())
             }
+            FileKind::Resource => {
+                self.resources.push((name, data));
+                Ok(())
+            }
             kind => bail!("{name}: {}", unsupported(kind)),
         }
     }
@@ -534,7 +537,6 @@ impl<'a> Linker<'a> {
             return Ok(());
         }
         if !ar.has_symbol_table {
-            // Index the members ourselves.
             for m in ar.members().map_err(|e| err!("{name}: {e}"))? {
                 if matches!(identify(m.data), FileKind::Object | FileKind::BigObject)
                     && let Ok(obj) = ObjFile::parse(m.data, String::new())
@@ -588,8 +590,6 @@ impl<'a> Linker<'a> {
         match identify(data) {
             FileKind::Object | FileKind::BigObject => {
                 let mut obj = ObjFile::parse(data, name)?;
-                // The table doesn't change while a wave is parsed: look the
-                // names up here, on all threads, rather than while merging.
                 for ext in &mut obj.externals {
                     ext.id = self.symtab.find_hashed(ext.name, ext.hash).unwrap_or(NONE);
                 }
@@ -614,12 +614,6 @@ impl<'a> Linker<'a> {
         }
     }
 
-    // ------------------------------------------------------------------
-    // Symbols
-    // ------------------------------------------------------------------
-
-    /// Reference `name` from outside any object (an `/INCLUDE`, the entry
-    /// point, an export): it must be defined, and is a GC root.
     fn add_root(&mut self, name: &str) -> SymId {
         let id = self.add_reference(name);
         self.gc_roots.push(id);
@@ -633,7 +627,6 @@ impl<'a> Linker<'a> {
         id
     }
 
-    /// Something needs `id`: load it if an archive offers it.
     #[inline]
     fn reference(&mut self, id: SymId) {
         if let Def::Lazy { archive, offset } = self.symtab.get(id).def {
@@ -642,12 +635,26 @@ impl<'a> Linker<'a> {
     }
 
     fn add_export(&mut self, spec: ExportSpec) {
-        if self.exports.iter().any(|e| e.name == spec.name) {
+        // x86: exports are undecorated like link.exe (`_foo` → `foo`), but `_foo@4` stays.
+        let x86 = self.machine == Machine::X86;
+        let name = match &spec.export_as {
+            Some(n) => n.clone(),
+            None if x86 && spec.name.starts_with('_') && !spec.name.contains('@') => {
+                spec.name[1..].to_string()
+            }
+            None => spec.name.clone(),
+        };
+        if self.exports.iter().any(|e| e.name == name) {
             return;
         }
-        let sym = self.add_root(spec.symbol());
+        let symbol = spec.symbol();
+        let sym = if x86 && !symbol.starts_with(['_', '@', '?']) {
+            self.add_root(&self.machine.mangle(symbol))
+        } else {
+            self.add_root(symbol)
+        };
         self.exports.push(Export {
-            name: spec.name,
+            name,
             sym,
             ordinal: spec.ordinal.unwrap_or(0),
             noname: spec.noname,
@@ -708,7 +715,6 @@ impl<'a> Linker<'a> {
         }
     }
 
-    /// Decide whether this object's copy of a COMDAT section is kept.
     fn select_comdat(
         &mut self,
         id: SymId,
@@ -765,11 +771,12 @@ impl<'a> Linker<'a> {
     }
 
     fn add_object(&mut self, mut obj: ObjFile<'a>) -> Result<()> {
-        if obj.machine != IMAGE_FILE_MACHINE_UNKNOWN && obj.machine != IMAGE_FILE_MACHINE_AMD64 {
+        if obj.machine != IMAGE_FILE_MACHINE_UNKNOWN && obj.machine != self.machine.coff() {
             bail!(
-                "{}: machine type {} conflicts with x64",
+                "{}: machine type {} conflicts with {}",
                 obj.name,
-                machine_name(obj.machine)
+                machine_name(obj.machine),
+                self.machine.name()
             );
         }
         let oi = self.objs.len() as u32;
@@ -794,7 +801,9 @@ impl<'a> Linker<'a> {
             }
             let (id, _) = self.intern_external(ext, oi);
             obj.sym_ids[ext.index as usize] = id;
-            if !self.select_comdat(id, &obj, oi, sec, value) {
+            if self.select_comdat(id, &obj, oi, sec, value) {
+                self.symtab.get_mut(id).function = ext.function;
+            } else {
                 obj.sections[sec as usize].discarded = true;
             }
         }
@@ -813,15 +822,15 @@ impl<'a> Linker<'a> {
                     if obj.sections[sec as usize].discarded {
                         self.reference(id);
                     } else {
-                        self.define(
-                            id,
-                            Def::Defined {
-                                obj: oi,
-                                sec,
-                                value,
-                            },
-                            &obj.name,
-                        );
+                        let def = Def::Defined {
+                            obj: oi,
+                            sec,
+                            value,
+                        };
+                        self.define(id, def, &obj.name);
+                        if self.symtab.get(id).def == def {
+                            self.symtab.get_mut(id).function = ext.function;
+                        }
                     }
                 }
                 ExtKind::Absolute { value } => {
@@ -839,7 +848,6 @@ impl<'a> Linker<'a> {
                     }
                 }
                 ExtKind::Weak { alias } => {
-                    // A weak reference never loads an archive member.
                     let s = self.symtab.get_mut(id);
                     if new || s.def.is_lazy() {
                         s.def = Def::Undefined;
@@ -878,10 +886,11 @@ impl<'a> Linker<'a> {
     }
 
     fn add_import(&mut self, imp: ShortImport<'a>, file: &str) -> Result<()> {
-        if imp.machine != IMAGE_FILE_MACHINE_AMD64 && imp.machine != IMAGE_FILE_MACHINE_UNKNOWN {
+        if imp.machine != self.machine.coff() && imp.machine != IMAGE_FILE_MACHINE_UNKNOWN {
             bail!(
-                "{file}: machine type {} conflicts with x64",
-                machine_name(imp.machine)
+                "{file}: machine type {} conflicts with {}",
+                machine_name(imp.machine),
+                self.machine.name()
             );
         }
         let ii = self.imports.len() as u32;
@@ -977,7 +986,7 @@ impl<'a> Linker<'a> {
                 }
                 "entry" if !val.is_empty() && self.entry_name.is_none() => {
                     self.entry_name = Some(val.to_string());
-                    self.entry = Some(self.add_root(val));
+                    self.entry = Some(self.add_root(&self.machine.mangle(val)));
                 }
                 "subsystem" if self.subsystem.is_none() => {
                     let sub = val.split(',').next().unwrap_or("");
@@ -989,8 +998,6 @@ impl<'a> Linker<'a> {
         Ok(())
     }
 
-    /// Weak externals and alternate names fall back; `__imp_x` for a locally
-    /// defined `x` gets a pointer; whatever is left is an error.
     fn resolve_remaining(&mut self) -> Result<()> {
         let n = self.symtab.len();
         for _ in 0..8 {
@@ -1020,8 +1027,27 @@ impl<'a> Linker<'a> {
             }
         }
 
+        let mut stand_ins = HashSet::new();
+        if self.machine == Machine::X86 {
+            for i in 0..self.exports.len() {
+                let sym = self.exports[i].sym;
+                if !self.symtab.get(sym).def.is_undefined() {
+                    continue;
+                }
+                let prefix = format!("{}@", String::from_utf8_lossy(self.symtab.get(sym).name));
+                if let Some(real) = self.find_decorated(&prefix) {
+                    self.exports[i].sym = real;
+                    self.gc_roots.push(real);
+                    stand_ins.insert(sym);
+                }
+            }
+        }
+
         let mut undefined = Vec::new();
         for id in 0..n as SymId {
+            if stand_ins.contains(&id) && self.symtab.get(id).first_ref == NONE {
+                continue;
+            }
             let s = self.symtab.get(id);
             if !s.def.is_undefined() {
                 continue;
@@ -1113,13 +1139,33 @@ impl<'a> Linker<'a> {
     }
 }
 
+pub fn detect_machine(cfg: &Config) -> Machine {
+    use std::io::Read;
+    for input in &cfg.inputs {
+        let mut head = [0u8; 64];
+        let Ok(mut f) = std::fs::File::open(&input.path) else {
+            continue;
+        };
+        let Ok(n) = f.read(&mut head) else { continue };
+        let head = &head[..n];
+        let machine = match identify(head) {
+            FileKind::Object => u16le(head, 0),
+            FileKind::BigObject => u16le(head, 6),
+            _ => continue,
+        };
+        if let Some(m) = Machine::from_coff(machine) {
+            return m;
+        }
+    }
+    Machine::X64
+}
+
 fn unsupported(kind: FileKind) -> &'static str {
     match kind {
         FileKind::Bitcode => {
             "LLVM bitcode (linker-plugin LTO) is not supported yet; build without `-C linker-plugin-lto`"
         }
         FileKind::AnonObject => "MSVC /GL (link-time code generation) objects are not supported",
-        FileKind::Resource => "resource (.res) files are not supported yet",
         FileKind::ThinArchive => "thin archives are not supported yet",
         FileKind::Elf => "this is an ELF file; hyprlnk links PE/COFF for now",
         FileKind::MachO => "this is a Mach-O file; hyprlnk links PE/COFF for now",

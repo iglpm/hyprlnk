@@ -1,30 +1,19 @@
-//! The PE/COFF backend: links x86-64 Windows executables and DLLs from COFF
-//! objects, archives (rlibs, static libraries) and import libraries, driven by
-//! `link.exe`/`lld-link` command lines.
-//!
-//! The phases, in order:
-//!
-//! 1. [`config`]: the command line (and later `.drectve` sections) becomes a
-//!    [`Config`].
-//! 2. [`resolve`]: inputs are mapped and parsed in parallel waves; symbols are
-//!    resolved, pulling archive members in as they are needed.
-//! 3. [`gc`]: COMDAT selection and `/OPT:REF` garbage collection decide which
-//!    sections are written.
-//! 4. [`synth`]: linker-made data (import tables, thunks, exports).
-//! 5. [`layout`]: sections are grouped into output sections and given
-//!    addresses.
-//! 6. [`write`]: sections are copied and relocated in parallel, and the PE
-//!    headers, base relocations and exception table are finished.
+//! The PE/COFF backend. Phases: config → resolve → gc → synth → layout → write.
 
+mod arch;
 mod config;
 mod def;
 mod gc;
+mod icf;
 mod implib;
 mod import;
 mod layout;
+mod map;
 mod object;
+mod pdb;
 mod reproduce;
 mod resolve;
+mod rsrc;
 mod symtab;
 mod synth;
 mod winsdk;
@@ -57,8 +46,6 @@ pub const IMAGE_SCN_MEM_DISCARDABLE: u32 = 0x0200_0000;
 pub const IMAGE_SCN_MEM_EXECUTE: u32 = 0x2000_0000;
 pub const IMAGE_SCN_MEM_READ: u32 = 0x4000_0000;
 pub const IMAGE_SCN_MEM_WRITE: u32 = 0x8000_0000;
-/// The bits of an input section's characteristics that decide which output
-/// section it joins: memory permissions and content type.
 pub const OUTPUT_CHARS_MASK: u32 = 0xFE00_0000
     | IMAGE_SCN_CNT_CODE
     | IMAGE_SCN_CNT_INITIALIZED_DATA
@@ -155,7 +142,6 @@ pub(crate) fn align_up(v: u64, a: u64) -> u64 {
     (v + a - 1) & !(a - 1)
 }
 
-/// Link with a `link.exe`-style command line (without the program name).
 pub fn link_main(args: Vec<String>) -> Result<()> {
     let args = crate::cmdline::expand_response_files(args)?;
     let cfg = Config::parse(&args)?;
@@ -184,7 +170,6 @@ pub fn link_main(args: Vec<String>) -> Result<()> {
     }
 }
 
-/// Link with a parsed configuration.
 pub fn link(cfg: Config) -> Result<()> {
     let arena = Arena::new();
     let mut timer = Timer::new(cfg.time);
@@ -192,20 +177,30 @@ pub fn link(cfg: Config) -> Result<()> {
     linker.resolve(&mut timer)?;
     linker.mark_live();
     timer.phase("garbage collection");
+    let gc = linker.cfg.gc.unwrap_or(!linker.cfg.debug);
+    if linker.cfg.icf.unwrap_or(gc && !linker.cfg.debug) {
+        let folded = linker.fold_identical_sections();
+        timer.detail(format!("{folded} identical sections folded"));
+        timer.phase("identical code folding");
+    }
     linker.create_synthetic()?;
     let layout = linker.layout();
     timer.phase("layout");
     linker.write(&layout, &mut timer)?;
+    if let Some(map) = &linker.cfg.map {
+        let path = map
+            .clone()
+            .unwrap_or_else(|| linker.output_path().with_extension("map"));
+        linker.write_map(&layout, &path)?;
+        timer.phase("map file");
+    }
     if let Some(path) = linker.implib_path() {
         linker.write_implib(&path)?;
         timer.phase("import library");
     }
     timer.report();
     if crate::EXIT_AFTER_LINK.load(std::sync::atomic::Ordering::Relaxed) {
-        // The process ends right after: let the OS reclaim the inputs'
-        // mappings and the millions of small allocations at once, instead
-        // of freeing them one by one (a third of the wall time of a large
-        // link).
+        // Leaked on purpose: freeing millions of small allocations costs a third of a large link.
         std::mem::forget(layout);
         std::mem::forget(linker);
         std::mem::forget(arena);

@@ -1,14 +1,4 @@
-//! hyprlnk ("hyperlink") is a fast linker, developed together with Rune and
-//! built into it.
-//!
-//! It is a library first: Rune links its users' binaries by running the
-//! hyprlnk inside its own executable (see [`EMBEDDED_ENV`]), and the
-//! `hyprlnk` binary is a thin wrapper around [`main_with_args`].
-//!
-//! The first backend links PE/COFF images (Windows executables and DLLs) for
-//! x86-64 and takes the same command lines as `link.exe` and `lld-link`, which
-//! is what `rustc` passes on `*-windows-msvc` targets. Where the time goes
-//! and what makes it fast is described in `README.md`.
+//! hyprlnk: a fast linker built into Rune. The COFF backend links x64/ARM64/x86 Windows images.
 
 pub mod archive;
 pub mod cmdline;
@@ -20,40 +10,37 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// hyprlnk's version.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Set (to any value) in the environment of a process to make the Rune
-/// executable act as this linker when that process runs it: Rune sets it on
-/// the compiler, so that `-C linker=<rune>` runs the embedded hyprlnk.
+/// Makes the Rune executable act as this linker (`-C linker=<rune>`).
 pub const EMBEDDED_ENV: &str = "RUNE_HYPRLNK";
 
-/// The command-line conventions a linker can be driven with.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Flavor {
-    /// `link.exe` / `lld-link`: Windows PE/COFF images.
     Coff,
-    /// GNU `ld` / `ld.lld`: ELF. Not implemented yet.
     Gnu,
-    /// Apple `ld64`: Mach-O. Not implemented yet.
     Darwin,
 }
 
-/// Whether hyprlnk can link binaries for the Rust target `triple`.
 pub fn supports_target(triple: &str) -> bool {
-    matches!(triple, "x86_64-pc-windows-msvc" | "x86_64-uwp-windows-msvc")
+    matches!(
+        triple,
+        "x86_64-pc-windows-msvc"
+            | "x86_64-uwp-windows-msvc"
+            | "x86_64-win7-windows-msvc"
+            | "aarch64-pc-windows-msvc"
+            | "aarch64-uwp-windows-msvc"
+            | "i686-pc-windows-msvc"
+            | "i686-uwp-windows-msvc"
+            | "i686-win7-windows-msvc"
+            | "i586-pc-windows-msvc"
+    )
 }
 
-/// Set by [`main_with_args`]: the process exits once the link is done, so the
-/// link's memory is left to the OS rather than freed.
 static EXIT_AFTER_LINK: AtomicBool = AtomicBool::new(false);
 
-/// Run the linker on a full command line (the program name first) and return
-/// the process exit code. Diagnostics go to stderr.
-///
-/// This is for processes that exit right after (the `hyprlnk` binary, Rune's
-/// linker mode): what the link allocated is not freed. To link several times
-/// in one process, use [`coff::link`].
+/// Run the linker on a full command line and return the exit code. Memory is not freed:
+/// only for processes that exit right after; use [`coff::link`] to link repeatedly.
 pub fn main_with_args<I, T>(args: I) -> i32
 where
     I: IntoIterator<Item = T>,
@@ -79,7 +66,6 @@ where
 }
 
 fn run(argv0: &str, mut args: Vec<String>) -> diag::Result<()> {
-    // `rust-lld -flavor link ...` style.
     let mut flavor = None;
     if args.first().map(String::as_str) == Some("-flavor") && args.len() >= 2 {
         flavor = Some(parse_flavor(&args[1])?);
@@ -108,8 +94,6 @@ fn parse_flavor(name: &str) -> diag::Result<Flavor> {
     })
 }
 
-/// `ld.hyprlnk`, `ld` → GNU; `ld64.hyprlnk` → Darwin; anything else (`hyprlnk`,
-/// `lld-link`, `link`, `rune`) → COFF.
 fn flavor_from_program_name(argv0: &str) -> Flavor {
     let stem = Path::new(argv0)
         .file_stem()
