@@ -21,7 +21,7 @@ body:
     id: comparison
     attributes:
       label: Comparison
-      description: Wall-clock times for hyprlnk and lld-link (or link.exe), best of several runs.
+      description: Wall-clock times for hyprlnk and lld-link or link.exe (macOS: ld or ld64.lld), best of several runs.
       placeholder: |
         hyprlnk:  1.2 s
         lld-link: 0.9 s
@@ -31,12 +31,12 @@ body:
     id: size
     attributes:
       label: Size of the link
-      description: Number of objects and libraries, total input size, output and PDB size.
+      description: Number of objects and libraries, total input size, output and debug info size.
   - type: input
     id: machine
     attributes:
       label: Machine
-      description: CPU (cores/threads), memory, disk, Windows version.
+      description: CPU (cores/threads), memory, disk, Windows or macOS version.
       placeholder: Ryzen 7 7700X (8C/16T), 32 GB, NVMe, Windows 11 24H2
     validations:
       required: true

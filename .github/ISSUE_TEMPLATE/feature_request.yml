@@ -14,7 +14,7 @@ body:
     id: proposal
     attributes:
       label: How should it work?
-      description: For link.exe/lld-link options, which option and what it should do.
+      description: For link.exe/lld-link or ld64 options, which option and what it should do.
   - type: dropdown
     id: area
     attributes:
@@ -22,8 +22,8 @@ body:
       options:
         - Command-line option
         - Input format
-        - Debug info (PDB)
-        - New platform (ELF, Mach-O, ...)
+        - Debug info (PDB, debug map)
+        - New platform (ELF, ...)
         - Rune integration
         - Performance
         - Other

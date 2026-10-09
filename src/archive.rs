@@ -60,8 +60,16 @@ impl<'a> Archive<'a> {
         let mut seen_symtab = false;
         while off < data.len() {
             let h = ar.header_at(off)?;
-            let body = &data[h.data_start..h.data_start + h.size];
-            match h.name {
+            let mut body = &data[h.data_start..h.data_start + h.size];
+            let mut name = h.name;
+            // BSD: `#1/<len>` names live at the start of the member's data.
+            if let Some(len) = h.name.strip_prefix(b"#1/").and_then(parse_decimal)
+                && len <= body.len()
+            {
+                name = trim_trailing(&body[..len], 0);
+                body = &body[len..];
+            }
+            match name {
                 b"/" if !seen_symtab => {
                     ar.symbols = parse_gnu_symtab(body, false)?;
                     seen_symtab = true;
@@ -73,7 +81,11 @@ impl<'a> Archive<'a> {
                     seen_symtab = true;
                 }
                 b"__.SYMDEF" | b"__.SYMDEF SORTED" => {
-                    ar.symbols = parse_bsd_symtab(body)?;
+                    ar.symbols = parse_bsd_symtab(body, false)?;
+                    seen_symtab = true;
+                }
+                b"__.SYMDEF_64" | b"__.SYMDEF_64 SORTED" => {
+                    ar.symbols = parse_bsd_symtab(body, true)?;
                     seen_symtab = true;
                 }
                 b"//" => ar.longnames = body,
@@ -183,20 +195,27 @@ fn parse_gnu_symtab(body: &[u8], wide: bool) -> Result<Vec<ArchiveSymbol<'_>>> {
     Ok(out)
 }
 
-fn parse_bsd_symtab(body: &[u8]) -> Result<Vec<ArchiveSymbol<'_>>> {
-    let u32le = |off: usize| -> Option<usize> {
-        Some(u32::from_le_bytes(body.get(off..off + 4)?.try_into().unwrap()) as usize)
+fn parse_bsd_symtab(body: &[u8], wide: bool) -> Result<Vec<ArchiveSymbol<'_>>> {
+    let w = if wide { 8 } else { 4 };
+    let read = |off: usize| -> Option<usize> {
+        let b = body.get(off..off + w)?;
+        Some(if wide {
+            u64::from_le_bytes(b.try_into().unwrap()) as usize
+        } else {
+            u32::from_le_bytes(b.try_into().unwrap()) as usize
+        })
     };
-    let ranlib_size = u32le(0).ok_or_else(|| err!("truncated BSD symbol table"))?;
-    let strtab_size = u32le(4 + ranlib_size).ok_or_else(|| err!("truncated BSD symbol table"))?;
-    let strtab_start = 8 + ranlib_size;
+    let ranlib_size = read(0).ok_or_else(|| err!("truncated BSD symbol table"))?;
+    let strtab_size = read(w + ranlib_size).ok_or_else(|| err!("truncated BSD symbol table"))?;
+    let strtab_start = 2 * w + ranlib_size;
     let strtab = body
         .get(strtab_start..strtab_start + strtab_size)
         .ok_or_else(|| err!("truncated BSD symbol table"))?;
-    let mut out = Vec::with_capacity(ranlib_size / 8);
-    for i in 0..ranlib_size / 8 {
-        let strx = u32le(4 + i * 8).unwrap();
-        let offset = u32le(8 + i * 8).unwrap() as u32;
+    let entry = 2 * w;
+    let mut out = Vec::with_capacity(ranlib_size / entry);
+    for i in 0..ranlib_size / entry {
+        let strx = read(w + i * entry).unwrap();
+        let offset = read(2 * w + i * entry).unwrap() as u32;
         let rest = strtab.get(strx..).unwrap_or(&[]);
         let end = rest.iter().position(|&b| b == 0).unwrap_or(rest.len());
         out.push(ArchiveSymbol {
@@ -374,6 +393,35 @@ mod tests {
         assert_eq!(members.len(), 2);
         assert_eq!(members[0].name, "a.obj");
         assert_eq!(members[0].data, b"first");
+    }
+
+    #[test]
+    fn reads_bsd_symbol_tables_with_long_names() {
+        // `__.SYMDEF` as a `#1/12` member: one symbol `_f` in the member at offset 0x60.
+        let mut symdef = Vec::new();
+        symdef.extend_from_slice(b"__.SYMDEF\0\0\0");
+        symdef.extend_from_slice(&8u32.to_le_bytes());
+        symdef.extend_from_slice(&0u32.to_le_bytes());
+        symdef.extend_from_slice(&0x60u32.to_le_bytes());
+        symdef.extend_from_slice(&4u32.to_le_bytes());
+        symdef.extend_from_slice(b"_f\0\0");
+        let mut bytes = MAGIC.to_vec();
+        let header = format!(
+            "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n",
+            "#1/12",
+            "0",
+            "0",
+            "0",
+            "644",
+            symdef.len()
+        );
+        bytes.extend_from_slice(header.as_bytes());
+        bytes.extend_from_slice(&symdef);
+        let ar = Archive::parse(&bytes).unwrap();
+        assert!(ar.has_symbol_table);
+        assert_eq!(ar.symbols.len(), 1);
+        assert_eq!(ar.symbols[0].name, b"_f");
+        assert_eq!(ar.symbols[0].offset, 0x60);
     }
 
     #[test]

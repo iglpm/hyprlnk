@@ -1,6 +1,58 @@
 # Performance
 
-## Benchmarks
+## macOS
+
+Linking Rune's own `rune` (dev profile): 258 objects and 202 rlibs on the
+command line (2,561 objects loaded, 445,000 atoms), libSystem, Security and
+CoreFoundation from the SDK's text stubs, 609 MB of input, a 90 MB
+executable with a 9.8 MB export trie and a 450,000-entry symbol table with
+its debug map. Apple M5 (10 cores, MacBook Air), macOS 27, inputs in the file
+cache; the three linkers take turns, 7 rounds, wall-clock time including
+process startup.
+
+| | hyprlnk | Apple `ld` (ld-prime, ld-27037) | ld64.lld 23.1 |
+| --- | ---: | ---: | ---: |
+| Median | **75 ms** | 172 ms | 310 ms |
+| Fastest | **73 ms** | 171 ms | 309 ms |
+| Output | 90.3 MB | 94.3 MB | 89.8 MB |
+| hyprlnk on 1 thread | 234 ms | | |
+
+The outputs are equivalent: the same sections with the same sizes as lld's
+(`__text`, `__eh_frame` and `__unwind_info` identical), the same symbols, and
+an export trie a few bytes smaller. On x86_64, hyprlnk's code is
+instruction-for-instruction lld's once addresses are factored out. (A
+MacBook Air throttles under sustained load; measure with the linkers
+interleaved, as above.)
+
+`--time` (or ld-prime's `-print_statistics`) for this link:
+
+```text
+hyprlnk:              2561 objects, 202 archives, 5 dylibs, 444912 atoms, 168390 symbols
+hyprlnk:              8 waves: parsing 12.46 ms, merging 3.49 ms
+hyprlnk:              LINKEDIT: fixups 2.88 ms, exports 10.19 + trie 6.97 ms, symtab plan 11.25 ms, function starts 10.19 ms
+hyprlnk:     10.4 ms  open inputs
+hyprlnk:     16.3 ms  resolve symbols
+hyprlnk:      6.1 ms  dead strip
+hyprlnk:      1.0 ms  synthetic sections
+hyprlnk:      5.3 ms  layout
+hyprlnk:     21.3 ms  write sections and LINKEDIT
+hyprlnk:      6.3 ms  UUID, code signature and file
+```
+
+| Phase | What happens | What makes it fast |
+| --- | --- | --- |
+| Open inputs | map files, read archive symbol tables, parse text stubs | one `open` per file (deduplicated by inode: `-lSystem -lc -lm` parse one stub), parallel |
+| Resolve symbols | load needed objects and archive members, split them into atoms | waves of parallel parsing; names hashed and looked up on the parsing threads |
+| Dead strip | mark live atoms; classify every relocation | work-stealing marking with atomic flags; one walk decides stubs, GOT slots, rebases and binds |
+| Layout | sections, addresses, `__unwind_info` | per-chunk placement in parallel; unwind encodings counted by sorting |
+| Write | copy and relocate sections ∥ fixups, export trie, symbol table and debug map | two buffers built side by side; export trie built in one pass over common prefixes, its offsets and bytes in parallel |
+| Sign and write the file | UUID, code signature, `pwrite` | helper threads write the file while the signature is hashed (two pages at a time on the SHA unit); only the first page and the signature wait |
+
+The output is written with `pwrite`, not through a shared mapping: macOS
+treats file pages that were written through a mapping as possibly tampered
+once the file runs, and kills processes that map them.
+
+## Windows
 
 Linking Rune's own `rune.exe` (dev profile): 2,337 objects from 221 archives
 (250 crates plus the standard library), 715 MB of input, a 32 MB executable,
@@ -28,7 +80,17 @@ shared between functions is folded too.
 
 ## Measuring your own links
 
-Capture a real link with `/REPRODUCE` (or `HYPRLNK_REPRODUCE`, which reaches
+On macOS, capture with `HYPRLNK_REPRODUCE` and replay with each linker:
+
+```sh
+HYPRLNK_REPRODUCE=/tmp/links cargo build      # with hyprlnk as the linker
+cd /tmp/links/myapp-1234
+hyprlnk -flavor darwin @link.rsp -o h --time
+ld @link.rsp -o a -print_statistics
+ld64.lld @link.rsp -o l
+```
+
+On Windows, capture a real link with `/REPRODUCE` (or `HYPRLNK_REPRODUCE`, which reaches
 links that `rustc` runs, under Cargo or Rune), then replay it with each
 linker:
 
@@ -54,7 +116,7 @@ hyprlnk:     39.10 ms  garbage collection
 …
 ```
 
-## Where the time goes, and why it's short
+## Where the time goes on Windows, and why it's short
 
 | Phase | What happens | What makes it fast |
 | --- | --- | --- |

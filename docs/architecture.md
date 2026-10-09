@@ -1,8 +1,13 @@
 # Architecture
 
-hyprlnk is a library (`hyprlnk`) with a thin binary on top. The PE/COFF
-backend lives in `src/coff/`; everything there is organized as phases of
-one link, each a module adding methods to the `Linker` in `resolve.rs`.
+hyprlnk is a library (`hyprlnk`) with a thin binary on top, and one backend
+per object format: PE/COFF in `src/coff/`, Mach-O in `src/macho/`. `lib.rs`
+picks one from `-flavor`, the program's name (`ld64.*` → Mach-O,
+`lld-link` → COFF) or the arguments themselves. Each backend is organized as
+phases of one link, each a module adding methods to the `Linker` in its
+`resolve.rs`.
+
+## PE/COFF
 
 ```text
 command line ─▶ config ─▶ resolve ─▶ gc ─▶ icf ─▶ synth ─▶ layout ─▶ write ─┬─▶ image
@@ -11,7 +16,7 @@ command line ─▶ config ─▶ resolve ─▶ gc ─▶ icf ─▶ synth ─�
                                                          resources) addresses)  (pdb/, in parallel)
 ```
 
-## Source map
+### Source map
 
 | File | |
 | --- | --- |
@@ -39,6 +44,49 @@ command line ─▶ config ─▶ resolve ─▶ gc ─▶ icf ─▶ synth ─�
 | `coff/winsdk.rs` | library search paths, MSVC/SDK discovery |
 | `coff/pdb/` | the PDB writer: `types` (merging), `modules`, `gsi` (globals and publics), `strtab`, `msf` (the container), `hash` |
 
+## Mach-O
+
+```text
+command line ─▶ config ─▶ resolve ─▶ gc ──────▶ scan ─▶ layout ─▶ write ─┬─▶ sections (relocated, in batches)
+                (ld64 or   (inputs,   (live atoms, (slots,   (sections,  │   ∥ LINKEDIT: fixups, export trie,
+                 cc args)   symbols,   and per       literals, addresses, │     symbol table + debug map
+                            dylibs)    relocation:   commons)  unwind     └─▶ UUID, then signature ∥ file write
+                                       stub/GOT/              info)
+                                       rebase/bind)
+```
+
+| File | |
+| --- | --- |
+| `macho/config.rs` | ld64 options → `Config`; `cc`-driver lines translated first; response files |
+| `macho/sdk.rs` | `-l`/`-framework` search, `-syslibroot` re-rooting, finding the SDK |
+| `macho/object.rs` | Mach-O objects (zero-copy), atoms, per-atom relocation ranges, symbol lookups |
+| `macho/tbd.rs` | text stubs: YAML v1–v4 and JSON v5, `$ld$` directives |
+| `macho/dylib.rs` | Mach-O dylibs as inputs: install name, re-exports, export trie |
+| `macho/symtab.rs` | the global symbol table and per-symbol slots |
+| `macho/resolve.rs` | the `Linker`; inputs, waves, precedence, re-exports, auto-linking, Objective-C stubs |
+| `macho/gc.rs` | `-dead_strip`; classifying each relocation (stub, GOT, TLV pointer, rebase, bind, signed) |
+| `macho/scan.rs` | slots, literal deduplication, commons, dylib ordinals |
+| `macho/layout.rs` | output sections and segments, load-command sizes, addresses |
+| `macho/unwind.rs` | `__compact_unwind` and `__eh_frame` in objects; `__unwind_info` |
+| `macho/arch.rs` | arm64 and x86_64 relocations, instruction encodings, stubs |
+| `macho/write.rs` | header, load commands, sections, the pipelined file write, code signature |
+| `macho/linkedit.rs` | symbol table with the debug map, function starts, data in code |
+| `macho/dyldinfo.rs` | rebase, bind and weak-bind opcodes; the export trie |
+| `macho/fixups.rs` | chained fixups (64-bit and arm64e) |
+| `macho/dwarf.rs` | compile-unit names for the debug map |
+| `macho/reproduce.rs` | `--reproduce` |
+| `sha256.rs` | SHA-256 with the ARMv8 and x86 SHA extensions, two messages at a time |
+
+The Mach-O backend keeps each object's sections split into **atoms** (at
+symbols, by literal content, or by `__eh_frame` record): the unit of dead
+stripping, deduplication and placement. Liveness is computed by work-stealing
+marking, and the same walk classifies every relocation of every live atom,
+so no later pass needs to look at relocations until they are applied.
+Writing splits the file in two buffers built side by side — everything
+before `__LINKEDIT`, and `__LINKEDIT` — then hands both to helper threads to
+write while the UUID and the code signature are computed; the first page
+(with the UUID) and the signature go last.
+
 ## Principles
 
 **Borrow, don't copy.** Inputs are memory-mapped into an `Arena` that lives
@@ -57,11 +105,11 @@ ordered. hyprlnk keeps it short: names are hashed and looked up on the
 parsing threads, and the sequential merge only handles names it hasn't
 seen.
 
-**Machine differences in one place.** `arch.rs` holds what differs between
-x64, ARM64 and x86: relocation semantics, thunk code, pointer and header
+**Machine differences in one place.** In each backend, `arch.rs` holds what
+differs between machines — for COFF, between x64, ARM64 and x86: relocation semantics, thunk code, pointer and header
 sizes, exception-table formats. The rest of the linker asks it.
 
-## A link, step by step
+## A COFF link, step by step
 
 1. **Config** parses the command line (and `.def` files) into a `Config`.
 2. **Resolve** maps the inputs in parallel and registers archive symbols as
@@ -86,8 +134,8 @@ sizes, exception-table formats. The rest of the linker asks it.
 
 ## Rune integration
 
-Rune passes `-C linker=<rune.exe>` to `rustc` and sets `RUNE_HYPRLNK` on the
-compiler; `rune`'s `main` sees the variable and runs
+Rune passes `-C linker=<rune>` to `rustc` (and, for Apple targets,
+`-C linker-flavor=ld64.lld`) and sets `RUNE_HYPRLNK` on the compiler; `rune`'s `main` sees the variable and runs
 `hyprlnk::main_with_args` instead of its own command line. The linker
 setting a unit is cached under is `rune:hyprlnk@<version>`, independent of
 where `rune` is installed. See `crates/rune-common/src/linker.rs` in the
@@ -96,6 +144,11 @@ Rune repository.
 ## Testing
 
 - Unit tests next to the code (`cargo test` / `rune test -p hyprlnk`).
+- `tests/macho.rs`: end-to-end on macOS with rustc and clang — unwinding,
+  threads and thread locals, backtraces, chained fixups, `cc`-style command
+  lines, cdylibs and Rust dylibs, proc-macros loaded by rustc, the debug map
+  through `dsymutil`, C with commons and TLS, C++ exceptions and weak
+  definitions, Objective-C, arm64e, x86_64, reproducible output.
 - `tests/link.rs`: end-to-end links with `rustc -C linker=hyprlnk` that run
   what they link — unwinding, threads and TLS, DLLs, resources, PDBs read by
   `dbghelp`, x86 programs, ARM64 images compared byte-for-byte with

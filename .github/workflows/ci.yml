@@ -63,7 +63,8 @@ jobs:
 
   unix:
     # The linker itself is portable (it can cross-link Windows images from
-    # anywhere); its unit tests run everywhere.
+    # anywhere); its unit tests run everywhere. On macOS, `tests/macho.rs`
+    # links real programs with rustc and clang and runs them.
     name: Test (${{ matrix.os }})
     strategy:
       fail-fast: false

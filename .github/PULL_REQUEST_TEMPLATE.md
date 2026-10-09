@@ -5,12 +5,13 @@
 ## Testing
 
 - [ ] `cargo fmt`, `cargo clippy --all-targets -- -D warnings`, `cargo test`
-- [ ] New behavior has a test (unit test, or end-to-end in `tests/link.rs`)
+- [ ] New behavior has a test (unit test, or end-to-end in `tests/link.rs` or `tests/macho.rs`)
 - [ ] For changes to what is written: a large real link checked against
-      `lld-link` (and `llvm-pdbutil dump --all` for PDB changes)
+      `lld-link` or `ld64.lld` (and `llvm-pdbutil dump --all` for PDB changes,
+      `codesign -v` and `dsymutil` for Mach-O)
 - [ ] Output is still deterministic (the same inputs give the same bytes)
 
 ## Performance
 
-<!-- For changes that may affect speed: `/TIME` before and after on a large
+<!-- For changes that may affect speed: `/TIME` or `--time` before and after on a large
 reproduced link, best of several runs. Delete this section otherwise. -->

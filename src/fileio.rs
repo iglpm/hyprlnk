@@ -24,15 +24,23 @@ impl Bytes {
 }
 
 pub fn load(path: &Path) -> io::Result<Bytes> {
+    load_with_metadata(path).map(|(b, _)| b)
+}
+
+/// The file's bytes and its metadata, from one `open` and one `fstat`.
+pub fn load_with_metadata(path: &Path) -> io::Result<(Bytes, std::fs::Metadata)> {
     let file = File::open(path)?;
-    let len = file.metadata()?.len();
-    if len < MAP_THRESHOLD {
+    let meta = file.metadata()?;
+    let len = meta.len();
+    let bytes = if len < MAP_THRESHOLD {
         use std::io::Read;
         let mut buf = Vec::with_capacity(len as usize);
         (&file).read_to_end(&mut buf)?;
-        return Ok(Bytes::Owned(buf.into_boxed_slice()));
-    }
-    Mmap::map(&file, len as usize).map(Bytes::Mapped)
+        Bytes::Owned(buf.into_boxed_slice())
+    } else {
+        Mmap::map(&file, len as usize).map(Bytes::Mapped)?
+    };
+    Ok((bytes, meta))
 }
 
 pub struct Arena {
@@ -197,6 +205,8 @@ pub struct OutputFile {
     file: Option<File>,
     ptr: *mut u8,
     len: usize,
+    /// Built in memory and written at commit instead of through a shared mapping.
+    buffer: Option<Vec<u8>>,
 }
 
 // SAFETY: the mapping is owned and only reachable through `&mut self`.
@@ -204,21 +214,64 @@ unsafe impl Send for OutputFile {}
 
 impl OutputFile {
     pub fn create(path: &Path, len: usize) -> io::Result<OutputFile> {
+        Self::create_with_mode(path, len, 0o666)
+    }
+
+    /// A code-signed image the user can run (mode 0777 less the umask). It is built in memory
+    /// and written with `pwrite`: macOS treats pages of a file that were written through a
+    /// shared mapping as tampered once the file is executed, and kills whoever maps them.
+    pub fn create_executable(path: &Path, len: usize) -> io::Result<OutputFile> {
+        let mut out = Self::open_tmp(path, 0o777)?;
+        out.len = len;
+        out.buffer = Some(vec![0u8; len]);
+        Ok(out)
+    }
+
+    fn open_tmp(path: &Path, mode: u32) -> io::Result<OutputFile> {
         let mut name = path.file_name().unwrap_or_default().to_os_string();
         name.push(format!(".hyprlnk-{}.tmp", std::process::id()));
         let tmp = path.with_file_name(name);
-        let file = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .open(&tmp)?;
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true).write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(mode);
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        let file = opts.open(&tmp)?;
+        Ok(OutputFile {
+            path: path.to_path_buf(),
+            tmp,
+            file: Some(file),
+            ptr: std::ptr::null_mut(),
+            len: 0,
+            buffer: None,
+        })
+    }
+
+    fn create_with_mode(path: &Path, len: usize, mode: u32) -> io::Result<OutputFile> {
+        let mut name = path.file_name().unwrap_or_default().to_os_string();
+        name.push(format!(".hyprlnk-{}.tmp", std::process::id()));
+        let tmp = path.with_file_name(name);
+        let mut opts = std::fs::OpenOptions::new();
+        opts.read(true).write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(mode);
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        let file = opts.open(&tmp)?;
         let mut out = OutputFile {
             path: path.to_path_buf(),
             tmp,
             file: None,
             ptr: std::ptr::null_mut(),
             len,
+            buffer: None,
         };
         file.set_len(len as u64)?;
         if len > 0 {
@@ -229,6 +282,9 @@ impl OutputFile {
     }
 
     pub fn bytes(&mut self) -> &mut [u8] {
+        if let Some(b) = &mut self.buffer {
+            return b;
+        }
         if self.len == 0 {
             return &mut [];
         }
@@ -240,6 +296,11 @@ impl OutputFile {
         self.unmap();
         let file = self.file.take().unwrap();
         file.set_len(len as u64)?;
+        if let Some(buf) = self.buffer.take() {
+            write_parallel(&file, &buf[..len])?;
+            // Leaked: the caller exits right after; unmapping a large image costs time.
+            std::mem::forget(buf);
+        }
         drop(file);
         if std::fs::rename(&self.tmp, &self.path).is_err() {
             // On Windows a read-only destination (from Rune's store) must be removed before the rename.
@@ -273,6 +334,112 @@ impl Drop for OutputFile {
             let _ = std::fs::remove_file(&self.tmp);
         }
     }
+}
+
+/// An output written piece by piece, from any thread, then renamed over the destination.
+pub struct PartsFile {
+    path: std::path::PathBuf,
+    tmp: std::path::PathBuf,
+    file: Option<File>,
+}
+
+impl PartsFile {
+    pub fn create(path: &Path, len: u64, mode: u32) -> io::Result<PartsFile> {
+        let out = OutputFile::open_tmp(path, mode)?;
+        let mut out = std::mem::ManuallyDrop::new(out);
+        let file = out.file.take().unwrap();
+        let tmp = std::mem::take(&mut out.tmp);
+        file.set_len(len)?;
+        Ok(PartsFile {
+            path: path.to_path_buf(),
+            tmp,
+            file: Some(file),
+        })
+    }
+
+    pub fn write_at(&self, data: &[u8], off: u64) -> io::Result<()> {
+        write_at(self.file.as_ref().unwrap(), data, off)
+    }
+
+    /// Write `data` at `off` in large chunks on the calling thread and helpers.
+    pub fn write_parallel(&self, data: &[u8], off: u64) -> io::Result<()> {
+        const CHUNK: usize = 16 << 20;
+        let file = self.file.as_ref().unwrap();
+        std::thread::scope(|s| {
+            let handles: Vec<_> = data
+                .chunks(CHUNK)
+                .enumerate()
+                .map(|(i, c)| s.spawn(move || write_at(file, c, off + (i * CHUNK) as u64)))
+                .collect();
+            handles.into_iter().try_for_each(|h| h.join().unwrap())
+        })
+    }
+
+    pub fn commit(mut self) -> io::Result<()> {
+        drop(self.file.take());
+        let (tmp, path) = (
+            std::mem::take(&mut self.tmp),
+            std::mem::take(&mut self.path),
+        );
+        if std::fs::rename(&tmp, &path).is_err() {
+            let _ = std::fs::remove_file(&path);
+            std::fs::rename(&tmp, &path)?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PartsFile {
+    fn drop(&mut self) {
+        if self.file.take().is_some() {
+            let _ = std::fs::remove_file(&self.tmp);
+        }
+    }
+}
+
+/// Write `data` at offset 0 in chunks on all threads.
+fn write_parallel(file: &File, data: &[u8]) -> io::Result<()> {
+    use rayon::prelude::*;
+    const CHUNK: usize = 4 << 20;
+    data.par_chunks(CHUNK)
+        .enumerate()
+        .try_for_each(|(i, chunk)| write_at(file, chunk, (i * CHUNK) as u64))
+}
+
+#[cfg(unix)]
+fn write_at(file: &File, mut data: &[u8], mut off: u64) -> io::Result<()> {
+    use std::os::unix::fs::FileExt;
+    while !data.is_empty() {
+        let n = file.write_at(data, off)?;
+        if n == 0 {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "short write"));
+        }
+        data = &data[n..];
+        off += n as u64;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn write_at(file: &File, mut data: &[u8], mut off: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !data.is_empty() {
+        let n = file.seek_write(data, off)?;
+        if n == 0 {
+            return Err(io::Error::new(io::ErrorKind::WriteZero, "short write"));
+        }
+        data = &data[n..];
+        off += n as u64;
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn write_at(file: &File, data: &[u8], off: u64) -> io::Result<()> {
+    use std::io::{Seek, SeekFrom, Write};
+    let mut f = file;
+    f.seek(SeekFrom::Start(off))?;
+    f.write_all(data)
 }
 
 #[cfg(unix)]

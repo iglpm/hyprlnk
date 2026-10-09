@@ -22,7 +22,7 @@ body:
     id: expected
     attributes:
       label: What did you expect?
-      description: For example, "it links with lld-link / link.exe and runs".
+      description: For example, "it links with lld-link / link.exe (or ld / ld64.lld on macOS) and runs".
     validations:
       required: true
   - type: textarea
@@ -68,12 +68,12 @@ body:
     id: toolchain
     attributes:
       label: Toolchain
-      description: Rust, clang, MSVC and Windows SDK versions, as far as they matter.
-      placeholder: rustc 1.98.1, MSVC 14.44, Windows SDK 10.0.26100
+      description: Rust, clang, MSVC and Windows SDK, or Xcode/Command Line Tools and macOS SDK versions, as far as they matter.
+      placeholder: rustc 1.98.1, MSVC 14.44, Windows SDK 10.0.26100 / macOS SDK 27.0
   - type: dropdown
     id: other-linkers
     attributes:
-      label: Does the same link work with lld-link or link.exe?
+      label: Does the same link work with lld-link or link.exe (macOS: ld or ld64.lld)?
       options:
         - "Yes"
         - "No"

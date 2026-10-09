@@ -1,6 +1,6 @@
 [package]
 name = "hyprlnk"
-description = "The fastest linker for Windows (x64, ARM64, x86): a drop-in for link.exe and lld-link, built into the Rune build system"
+description = "The fastest linker for Windows (x64, ARM64, x86) and macOS (arm64, arm64e, x86_64): a drop-in for link.exe, lld-link, ld64 and ld64.lld, built into the Rune build system"
 version = "2027.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
@@ -9,7 +9,7 @@ repository = "https://github.com/runepm/rune"
 homepage = "https://runepm.com"
 documentation = "https://docs.rs/hyprlnk"
 readme = "README.md"
-keywords = ["linker", "pdb", "coff", "windows", "lld"]
+keywords = ["linker", "pdb", "coff", "macho", "lld"]
 categories = ["development-tools::build-utils", "command-line-utilities"]
 # Self-contained on purpose (no `workspace = true`): this directory can be
 # built, published and moved on its own.

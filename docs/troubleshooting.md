@@ -1,6 +1,46 @@
 # Troubleshooting
 
-## Common errors
+## Common errors on macOS
+
+**`undefined symbol: _foo` / `>>> referenced by …`**
+As on Windows: a missing library (`-l`, `-framework`, a crate's `#[link]`),
+or a library for another architecture or platform. Text stubs list symbols
+per architecture and platform; `$ld$hide$` entries hide some for old
+deployment targets.
+
+**`library not found for -lfoo` / `framework not found for -framework Foo`**
+The searched directories are printed. Pass `-L`/`-F`, or point
+`-syslibroot` (or `SDKROOT`) at the SDK: `xcrun --show-sdk-path`.
+
+**`… is built for x86_64, but the link is for arm64`**
+An object or archive member of the wrong architecture. Universal files are
+fine; hyprlnk picks the right slice.
+
+**`branch target … is out of range … (±128 MiB)`**
+The arm64 `__text` is larger than a branch reaches; hyprlnk doesn't make
+branch islands yet. Split the binary (move code into a dylib), or build with
+less code (`-C opt-level=s`).
+
+**`absolute pointer in __TEXT,… needs a rebase at runtime, but the section is read-only`**
+Position-independent images can't patch read-only code. Compile with
+`-fPIC` (Rust always does), or move the data to a writable section.
+
+**`signed pointers … need -arch arm64e`**
+An arm64e object in an arm64 link; build everything for the same
+architecture.
+
+**The program is killed at launch (`Killed: 9`, "Code Signature Invalid")**
+Something changed the file after linking. Relink, or re-sign with
+`codesign -s - -f <file>`. hyprlnk never writes into an existing file; a tool
+that patches binaries in place (or copying over a running program) can cause
+this.
+
+**No source lines in backtraces or lldb**
+The debug map points at the object files; they must still exist where the
+link found them (or build with `-C split-debuginfo=packed` for a `.dSYM`).
+`-S` drops the debug map.
+
+## Common errors on Windows
 
 **`undefined symbol: …` / `>>> referenced by …`**
 Something refers to a symbol nothing defines. Usually a missing library
@@ -34,6 +74,14 @@ That's a bug — please report it (below).
 
 ## Looking inside
 
+On macOS:
+
+- `-t` lists each file as it is loaded; `--time` shows where the time went.
+- `otool -lv app`, `dyld_info -fixups -exports app`, `codesign -dvvv app`,
+  `nm -m app` and `dsymutil -s app` (the debug map) show what was written.
+
+On Windows:
+
 - `/VERBOSE` lists each file read, each archive member loaded, and each
   section folded by ICF.
 - `/TIME` shows where the time went.
@@ -49,8 +97,13 @@ $env:HYPRLNK_REPRODUCE = "C:\repro"   # or add /REPRODUCE:C:\repro
 <build the way that fails>
 ```
 
-`C:\repro\<output>-<pid>\` then holds every input and a `link.rsp`;
-`hyprlnk @link.rsp` repeats the link. Zip that directory (check it contains
+```sh
+HYPRLNK_REPRODUCE=/tmp/repro <build the way that fails>   # or --reproduce=/tmp/repro
+```
+
+`<dir>/<output>-<pid>/` then holds every input and a `link.rsp`;
+`hyprlnk @link.rsp` (on macOS `hyprlnk -flavor darwin @link.rsp`) repeats
+the link. Zip that directory (check it contains
 nothing private) and attach it to an issue, with the error or the
 difference you see. Under Rune or Cargo the variable reaches every link
 `rustc` runs.
