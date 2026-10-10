@@ -1,12 +1,15 @@
 # Command line
 
-hyprlnk speaks two command-line dialects: `link.exe`'s for Windows images and
-ld64's for macOS images. It picks one from `-flavor link|darwin` as the first
-argument, from its program name (`ld64.*` and `ld` on a Mac mean ld64,
-`lld-link` and `link` mean link.exe), or from the arguments themselves
-(`/OUT:` and friends, or `-arch`, `-platform_version`, `-Wl,…`); otherwise it
-follows the host. [macOS (ld64)](#macos-ld64-command-line) options are below
-the Windows ones.
+hyprlnk speaks three command-line dialects: `link.exe`'s for Windows images,
+ld64's for macOS images and GNU ld's for Linux ones. It picks one from
+`-flavor link|darwin|gnu` as the first argument, from its program name
+(`ld64.*`, and `ld` on a Mac, mean ld64; `ld.*`, and `ld` elsewhere, mean GNU
+ld; `lld-link` and `link` mean link.exe), or from the arguments themselves
+(`/OUT:` and friends; `-arch`, `-platform_version`; `--gc-sections`, `-pie`,
+`-z`, `.so` files); otherwise it follows the host. The
+[macOS (ld64)](#macos-ld64-command-line) and
+[Linux (GNU ld)](#linux-gnu-ld-command-line) options are below the Windows
+ones.
 
 ## Windows (link.exe command line)
 
@@ -225,3 +228,94 @@ Accepted and ignored, for compatibility: `-demangle`, `-dynamic`, `-pie`,
 `-object_path_lto`, `-ld_classic`, `-ld_new`, `-bind_at_load` and other ld64
 options without an effect here. Unknown options are warned about and
 skipped.
+
+## Linux (GNU ld command line)
+
+```text
+hyprlnk [-flavor gnu] [options] <inputs...>
+```
+
+Options follow GNU ld and ld.lld: `-x` and `--long` (also `-long`) forms,
+values in the same argument (`--soname=libx.so.1`, `-L/dir`) or the next
+(`-soname libx.so.1`). `@file` reads more arguments from a response file with
+GNU quoting. Inputs are recognized by their contents: ELF objects, archives
+(`.a`, `.rlib`, thin archives), shared objects and input linker scripts.
+
+A `cc`-style command line — what rustc passes to a linker it doesn't
+recognize — goes to the C compiler (`HYPRLNK_CC`, else `cc`), with a private
+directory in front of `-B` holding hyprlnk as `ld` (and as `ld.lld`,
+`ld.bfd`, `ld.gold` and `ld.mold`); `-fuse-ld=` and `--ld-path=` are dropped.
+The C compiler runs hyprlnk again with GNU ld's command line.
+
+### Output
+
+| Option | Default | |
+| --- | --- | --- |
+| `-o <file>` | `a.out` | the file to write |
+| `-shared`, `-pie`, `-no-pie`, `-static`, `-static-pie` | `-no-pie` | shared object; position-independent, classic or static executable |
+| `-m <emulation>` | the first object's machine | `elf_x86_64`, `elf_i386`, `aarch64linux`, `armelf_linux_eabi`, `elf64lriscv`, `elf32lriscv`, `elf64lppc`, `elf64ppc`, `elf64_s390`, `elf64loongarch` |
+| `-e <symbol>` | `_start` | entry point |
+| `-soname <name>` | | `DT_SONAME` |
+| `-rpath <dir>`, `--enable-new-dtags`, `--disable-new-dtags` | `DT_RUNPATH` | run-time search path |
+| `-dynamic-linker <path>`, `--no-dynamic-linker` | the platform's | `PT_INTERP` |
+| `--build-id[=fast\|sha1\|md5\|sha256\|uuid\|0x<hex>\|none]` | none | a content hash of that size, a random UUID, or the bytes given |
+| `--hash-style=gnu\|sysv\|both` | `both` | `.gnu.hash`, `.hash` |
+| `--eh-frame-hdr` | off | `.eh_frame_hdr` and `PT_GNU_EH_FRAME` |
+| `-z now`, `-z lazy` | lazy | bind at load |
+| `-z relro`, `-z norelro` | relro | `PT_GNU_RELRO` |
+| `-z noexecstack`, `-z execstack` | from the objects | `PT_GNU_STACK` |
+| `-z text`, `-z notext`, `-z defs`, `-z origin`, `-z nodelete`, `-z nodlopen`, `-z initfirst`, `-z interpose` | | as GNU ld |
+| `-z separate-code`, `-z max-page-size=<n>`, `-z common-page-size=<n>` | | segment layout |
+| `-z keep-text-section-prefix` | off | keep `.text.hot` and friends apart |
+| `-z stack-size=<n>` | | `PT_GNU_STACK`'s size |
+| `-s`, `-S`, `-x`, `-X`, `--discard-none` | | strip everything, debug info, local or temporary symbols |
+
+### Libraries and symbols
+
+| Option | |
+| --- | --- |
+| `-l<name>`, `-l:<file>`, `-L<dir>`, `--sysroot=<dir>` | link a library (`lib<name>.so`, else `.a`, per directory); search directories |
+| `-Bstatic`, `-Bdynamic`, `-static` | only archives from here on; shared objects again |
+| `--as-needed`, `--no-as-needed`, `--whole-archive`, `--no-whole-archive`, `--push-state`, `--pop-state` | per input |
+| `--start-group`, `--end-group` | accepted: every archive is searched as one group anyway |
+| `--gc-sections`, `--print-gc-sections` | drop unreferenced sections; list them |
+| `-u <symbol>`, `--require-defined=<symbol>` | keep (must define) a symbol |
+| `-E`, `--export-dynamic`, `--export-dynamic-symbol=<glob>`, `--dynamic-list=<file>` | what goes in `.dynsym` |
+| `--version-script=<file>` | symbol versions and local/global patterns |
+| `-Bsymbolic`, `-Bsymbolic-functions`, `-Bsymbolic-non-weak-functions`, `-Bsymbolic-non-weak` | bind a shared object's references to its own definitions |
+| `--defsym=<symbol>=<expr>`, `--wrap=<symbol>` | |
+| `--exclude-libs=<lib,…\|ALL>` | don't export what these archives define |
+| `--no-undefined`, `--unresolved-symbols=<how>`, `--allow-shlib-undefined`, `--allow-multiple-definition` | |
+| `-init <symbol>`, `-fini <symbol>` | `DT_INIT`, `DT_FINI` |
+
+### Diagnostics
+
+| Option | |
+| --- | --- |
+| `--time` (also `--print-stats`) | per-phase timing |
+| `-t`, `--trace` | print each input as it is loaded |
+| `-Map=<file>`, `-M` | sections and symbols by address, in lld's format (`-M`: standard output) |
+| `--dependency-file=<file>` | a Makefile rule listing every input |
+| `--reproduce=<dir>`, `HYPRLNK_REPRODUCE` | save the inputs and a `link.rsp` |
+| `--threads=<n>`, `--no-threads` | worker threads |
+| `--fatal-warnings`, `-v`, `--version`, `--help` | |
+| `--no-fork` | don't fork (the default forks, so the caller doesn't wait for the process to tear down) |
+
+Accepted and ignored, for compatibility: GCC's `-plugin` and LTO options,
+`-O<n>`, `--no-undefined-version`, `--build-id-…`, `--color-diagnostics`,
+`--sort-common`, `--no-copy-dt-needed-entries`, `--warn-*`, `--gdb-index`,
+`--icf` (warned), `--compress-debug-sections` (warned; written uncompressed),
+`-z pack-relative-relocs` (relative relocations are written as `RELA`),
+`--fix-cortex-a53-843419` (the erratum workaround is not applied) and other
+options without an effect here. Linker scripts that lay out the output
+(`SECTIONS`, `MEMORY`, `PHDRS`), `-r` and `--emit-relocs` are errors. Unknown
+options are warned about and skipped.
+
+### Environment
+
+| Variable | |
+| --- | --- |
+| `HYPRLNK_CC` | the C compiler for `cc`-style command lines (default `cc`) |
+| `HYPRLNK_REPRODUCE` | save every link to this directory |
+| `HYPRLNK_NO_FORK` | don't fork |
+| `HYPRLNK_PROF` | with `--time`: CPU time, busy cores and page faults per phase, and sub-steps |

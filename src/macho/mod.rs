@@ -21,6 +21,7 @@ mod unwind;
 mod write;
 
 pub use config::Config;
+pub(crate) use config::glob_match;
 
 use crate::diag::{Result, Timer};
 use crate::fileio::Arena;

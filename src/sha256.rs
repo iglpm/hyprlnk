@@ -41,6 +41,7 @@ pub fn digest2(a: &[u8], b: &[u8]) -> ([u8; 32], [u8; 32]) {
     (digest(a), digest(b))
 }
 
+#[cfg(target_arch = "aarch64")]
 fn words(state: [u32; 8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     for (i, w) in state.iter().enumerate() {
@@ -262,7 +263,7 @@ mod x86 {
             s1 = _mm_shuffle_epi32(s1, 0x1B); // EFGH
             let mut s0 = _mm_alignr_epi8(tmp, s1, 8); // ABEF
             s1 = _mm_blend_epi16(s1, tmp, 0xF0); // CDGH
-            for block in blocks.chunks_exact(64) {
+            for block in blocks.as_chunks::<64>().0 {
                 let (a0, c0) = (s0, s1);
                 let p = block.as_ptr() as *const __m128i;
                 let mut w = [

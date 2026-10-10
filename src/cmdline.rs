@@ -28,6 +28,60 @@ fn expand_into(args: Vec<String>, out: &mut Vec<String>, depth: usize) -> Result
     Ok(())
 }
 
+/// `@file` arguments, split like a POSIX shell (GCC, Clang and rustc write them this way).
+pub fn expand_gnu_response_files(args: Vec<String>) -> Result<Vec<String>> {
+    let mut out = Vec::with_capacity(args.len());
+    expand_gnu_into(args, &mut out, 0)?;
+    Ok(out)
+}
+
+fn expand_gnu_into(args: Vec<String>, out: &mut Vec<String>, depth: usize) -> Result<()> {
+    for arg in args {
+        match arg.strip_prefix('@') {
+            Some(path) if !path.is_empty() && std::path::Path::new(path).is_file() => {
+                if depth > 16 {
+                    bail!("response files nest too deeply at '{path}'");
+                }
+                let bytes = std::fs::read(path)
+                    .map_err(|e| err!("cannot read response file '{path}': {e}"))?;
+                let mut inner = Vec::new();
+                tokenize_gnu(&decode_text(&bytes), &mut inner);
+                expand_gnu_into(inner, out, depth + 1)?;
+            }
+            _ => out.push(arg),
+        }
+    }
+    Ok(())
+}
+
+/// Split like a POSIX shell without expansions: quotes group, backslash escapes.
+pub fn tokenize_gnu(s: &str, out: &mut Vec<String>) {
+    let mut chars = s.chars().peekable();
+    loop {
+        while chars.next_if(|c| c.is_whitespace()).is_some() {}
+        if chars.peek().is_none() {
+            return;
+        }
+        let mut arg = String::new();
+        let mut quote: Option<char> = None;
+        while let Some(c) = chars.next() {
+            match (quote, c) {
+                (None, c) if c.is_whitespace() => break,
+                (None, '\'' | '"') => quote = Some(c),
+                (Some(q), c) if c == q => quote = None,
+                (Some('\''), c) => arg.push(c),
+                (_, '\\') => {
+                    if let Some(n) = chars.next() {
+                        arg.push(n);
+                    }
+                }
+                (_, c) => arg.push(c),
+            }
+        }
+        out.push(arg);
+    }
+}
+
 pub fn decode_text(bytes: &[u8]) -> String {
     if let Some(rest) = bytes.strip_prefix(&[0xFF, 0xFE]) {
         let units: Vec<u16> = rest

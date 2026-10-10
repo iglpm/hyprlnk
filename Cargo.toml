@@ -1,6 +1,6 @@
 [package]
 name = "hyprlnk"
-description = "The fastest linker for Windows (x64, ARM64, x86) and macOS (arm64, arm64e, x86_64): a drop-in for link.exe, lld-link, ld64 and ld64.lld, built into the Rune build system"
+description = "The fastest linker for Windows (x64, ARM64, x86) and macOS (arm64, arm64e, x86_64), and a fast one for Linux (x86-64, AArch64, ARM, RISC-V and more): a drop-in for link.exe, lld-link, ld64, GNU ld and lld, built into the Rune build system"
 version = "2027.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
@@ -9,7 +9,7 @@ repository = "https://github.com/runepm/rune"
 homepage = "https://runepm.com"
 documentation = "https://docs.rs/hyprlnk"
 readme = "README.md"
-keywords = ["linker", "pdb", "coff", "macho", "lld"]
+keywords = ["linker", "elf", "coff", "macho", "lld"]
 categories = ["development-tools::build-utils", "command-line-utilities"]
 # Self-contained on purpose (no `workspace = true`): this directory can be
 # built, published and moved on its own.
@@ -28,6 +28,10 @@ xxhash-rust = { version = "0.8", features = ["xxh3"] }
 hashbrown = { version = "0.17", default-features = false }
 rustc-demangle = "0.1"
 mimalloc = { version = "0.1", default-features = false }
+memchr = "2"
+# Compressed debug sections in ELF inputs (`-gz`, the default of some toolchains).
+miniz_oxide = "0.9"
+zstd = { version = "0.13", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

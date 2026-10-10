@@ -197,6 +197,75 @@ impl Drop for Mmap {
     }
 }
 
+/// Move an existing output out of the way and delete it in a child process. Freeing a large
+/// file's blocks takes the kernel tens of milliseconds, and replacing it with the new output
+/// would make the link wait for that. Only for processes that exit after linking (the child
+/// is not waited for); elsewhere the old file is simply replaced.
+#[cfg(unix)]
+pub fn remove_old_output_in_background(path: &Path) {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return;
+    };
+    // Small files cost nothing to free; hard links (Rune's store) are not ours to unlink.
+    if !meta.is_file() || meta.len() < (4 << 20) || {
+        use std::os::unix::fs::MetadataExt;
+        meta.nlink() > 1
+    } {
+        return;
+    }
+    let old = old_name(path);
+    if std::fs::rename(path, &old).is_err() {
+        return;
+    }
+    unlink_in_background(&old);
+}
+
+/// Where an old output goes while it is replaced or reused.
+#[cfg(unix)]
+fn old_name(path: &Path) -> std::path::PathBuf {
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".hyprlnk-old-{}", std::process::id()));
+    path.with_file_name(name)
+}
+
+/// Unlink `old` in a child process: freeing a large file's pages and blocks takes a while.
+#[cfg(unix)]
+fn unlink_in_background(old: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(old.as_os_str().as_bytes()) else {
+        let _ = std::fs::remove_file(old);
+        return;
+    };
+    // SAFETY: the child only calls async-signal-safe functions (unlink, _exit).
+    unsafe {
+        match libc::fork() {
+            0 => {
+                libc::unlink(c.as_ptr());
+                libc::_exit(0);
+            }
+            -1 => {
+                libc::unlink(c.as_ptr());
+            }
+            _ => {}
+        }
+    }
+}
+
+#[cfg(not(unix))]
+pub fn remove_old_output_in_background(_path: &Path) {}
+
+/// The process's umask, from `/proc` (reading it with `umask(2)` would change it).
+#[cfg(target_os = "linux")]
+fn umask() -> u32 {
+    std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|s| {
+            let v = s.lines().find_map(|l| l.strip_prefix("Umask:"))?;
+            u32::from_str_radix(v.trim(), 8).ok()
+        })
+        .unwrap_or(0o022)
+}
+
 /// Memory-mapped temp file renamed over the destination when complete. Never writes into an
 /// existing output: it may be a hard link into Rune's store or a running program.
 pub struct OutputFile {
@@ -251,7 +320,71 @@ impl OutputFile {
         })
     }
 
-    fn create_with_mode(path: &Path, len: usize, mode: u32) -> io::Result<OutputFile> {
+    /// A memory-mapped executable that overwrites the existing one when that is safe, as mold
+    /// and wild do: writing into a file's existing pages is far cheaper than having a new file
+    /// allocate fresh ones. Safe means a regular file of ours with no other links (so not one
+    /// in Rune's store) that isn't running (`ETXTBSY`); it is moved aside first, so the output
+    /// path never shows a half-written image. (Shared libraries always get a new file: a
+    /// running process may have the old one mapped.)
+    #[cfg(target_os = "linux")]
+    pub fn create_reusing(path: &Path, len: usize, mode: u32) -> io::Result<OutputFile> {
+        match Self::reuse(path, len, mode) {
+            Some(out) => Ok(out),
+            None => Self::create_with_mode(path, len, mode),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn reuse(path: &Path, len: usize, mode: u32) -> Option<OutputFile> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let meta = std::fs::symlink_metadata(path).ok()?;
+        // SAFETY: geteuid has no preconditions.
+        let ours = meta.uid() == unsafe { libc::geteuid() };
+        if !meta.is_file() || meta.nlink() != 1 || !ours || meta.len() < (1 << 20) || len == 0 {
+            return None;
+        }
+        let old = old_name(path);
+        std::fs::rename(path, &old).ok()?;
+        // This late the process is large: a thread unlinks, not a forked child.
+        let fail = |old: &Path| {
+            let old = old.to_path_buf();
+            std::thread::spawn(move || std::fs::remove_file(old));
+            None
+        };
+        let Ok(file) = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&old)
+        else {
+            // Running, or read-only: the output becomes a new file.
+            return fail(&old);
+        };
+        let perm = mode & !umask();
+        if meta.mode() & 0o7777 != perm
+            && file
+                .set_permissions(std::fs::Permissions::from_mode(perm))
+                .is_err()
+        {
+            return fail(&old);
+        }
+        if file.set_len(len as u64).is_err() {
+            return fail(&old);
+        }
+        let Ok(ptr) = map_rw(&file, len) else {
+            return fail(&old);
+        };
+        Some(OutputFile {
+            path: path.to_path_buf(),
+            tmp: old,
+            file: Some(file),
+            ptr,
+            len,
+            buffer: None,
+        })
+    }
+
+    /// A memory-mapped output with the given permission bits (less the umask).
+    pub fn create_with_mode(path: &Path, len: usize, mode: u32) -> io::Result<OutputFile> {
         let mut name = path.file_name().unwrap_or_default().to_os_string();
         name.push(format!(".hyprlnk-{}.tmp", std::process::id()));
         let tmp = path.with_file_name(name);
@@ -293,6 +426,8 @@ impl OutputFile {
     }
 
     pub fn commit(mut self, len: usize) -> io::Result<()> {
+        // Unmapped before the caller hears of success: a writable shared mapping counts as the
+        // file being open for writing, and running it would fail with ETXTBSY.
         self.unmap();
         let file = self.file.take().unwrap();
         file.set_len(len as u64)?;

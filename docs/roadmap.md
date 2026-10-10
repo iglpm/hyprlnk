@@ -6,12 +6,19 @@
 - **macOS**: Mach-O for arm64, arm64e and x86_64 — executables, dylibs and
   bundles, chained fixups, code signatures, the debug map, Objective-C,
   about twice as fast as Apple's ld-prime and four times lld.
+- **Linux**: ELF for x86-64, x86, AArch64, ARM, RISC-V, POWER (ppc64le),
+  s390x and LoongArch — executables (PIE, static, static-pie) and shared
+  objects against glibc and musl, symbol versions, all TLS models with
+  relaxation, IFUNC, `--gc-sections`, build IDs; Rune's default linker.
 
-## Next platform
+## Linux: finishing touches
 
-**ELF** (Linux): executables and shared objects for x86-64 and AArch64, used
-through `cc -fuse-ld=hyprlnk` and by Rune directly — so Rune's main
-platforms all get the same speed.
+- Range-extension thunks for AArch64 and ARM branches beyond their reach
+- Linker relaxation on RISC-V and LoongArch
+- `-z pack-relative-relocs` (`DT_RELR`), `--compress-debug-sections`,
+  `--icf`
+- ppc64 ELFv1, big-endian AArch64 and ARM, x32, Android
+- Linker scripts with `SECTIONS` (kernels, firmware)
 
 ## macOS: finishing touches
 

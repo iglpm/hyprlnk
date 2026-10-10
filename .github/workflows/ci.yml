@@ -64,7 +64,8 @@ jobs:
   unix:
     # The linker itself is portable (it can cross-link Windows images from
     # anywhere); its unit tests run everywhere. On macOS, `tests/macho.rs`
-    # links real programs with rustc and clang and runs them.
+    # links real programs with rustc and clang and runs them; on Linux,
+    # `tests/elf.rs` does with rustc, gcc and g++.
     name: Test (${{ matrix.os }})
     strategy:
       fail-fast: false
@@ -76,6 +77,35 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+      - name: Link a release build of hyprlnk with itself
+        if: runner.os == 'Linux'
+        run: |
+          cargo build --release
+          cp target/release/hyprlnk "$RUNNER_TEMP/hyprlnk-stage0"
+          RUSTFLAGS="-C linker=$RUNNER_TEMP/hyprlnk-stage0" cargo build --release --target-dir target/self
+          ./target/self/release/hyprlnk --version
+          readelf -p .comment target/self/release/hyprlnk | grep "Linker: hyprlnk"
+
+  linux-cross:
+    # Every other Linux architecture: static musl programs that unwind, use
+    # threads and thread locals and print backtraces, linked by hyprlnk and
+    # run under qemu-user.
+    name: Test (Linux, other architectures under qemu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: >-
+            aarch64-unknown-linux-musl, armv7-unknown-linux-musleabihf,
+            arm-unknown-linux-musleabihf, i686-unknown-linux-musl,
+            riscv64gc-unknown-linux-musl, powerpc64le-unknown-linux-musl,
+            loongarch64-unknown-linux-musl, x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+      - run: cargo test --test elf other_architectures_run_under_qemu -- --nocapture
+        env:
+          HYPRLNK_TEST_ALL_ARCHES: "1"
 
   msrv:
     name: Minimum Rust version

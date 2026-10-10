@@ -46,3 +46,26 @@ The first release.
   or the arguments.
 - Rune passes `-C linker-flavor=ld64.lld` for Apple targets, so the built-in
   hyprlnk links them too.
+- An **ELF linker for Linux** taking GNU ld/`ld.lld` command lines:
+  executables (PIE, `-no-pie`, static, static-pie) and shared objects for
+  **x86-64, x86, AArch64, ARM, RISC-V, POWER (ppc64le), s390x and
+  LoongArch**, against glibc or musl; 1.5–2.3 times as fast as lld and
+  1.45–1.85 times as fast as mold on Rune's and hyprlnk's own builds.
+  - Inputs: ELF objects (debug sections may be zlib- or zstd-compressed),
+    archives (also thin), shared objects with symbol versions, input linker
+    scripts, response files.
+  - Output: dynamic sections, `.gnu.hash`/`.hash`, symbol versions from
+    version scripts, GOT/PLT, copy relocations and canonical PLT entries,
+    IFUNC, RELRO, all TLS models with relaxation (x86-64, x86, AArch64,
+    s390x), GOT-load relaxation on x86-64, ARM/Thumb interworking, ppc64
+    TOC and call stubs, `.eh_frame_hdr`, `.ARM.exidx`, build IDs, a
+    `Linker: hyprlnk` line in `.comment`.
+  - `--gc-sections`, deduplicated mergeable sections (`.debug_str`),
+    `--wrap`, `--defsym`, `--exclude-libs`, `-Map`, `--dependency-file`,
+    `--reproduce`, `--time`.
+  - A `cc` command line (`-C linker=hyprlnk`) runs the C compiler
+    (`HYPRLNK_CC`, else `cc`) with hyprlnk as its `ld`.
+  - Executables are written into the previous output's file when that is
+    safe (not hard-linked, not running), as mold and wild do.
+- `rustc -C linker=hyprlnk` on Linux, `cc -B<dir with hyprlnk as ld>`, and
+  `clang -fuse-ld=hyprlnk` (with `ld.hyprlnk` on `PATH`) all work.

@@ -2,6 +2,7 @@
 
 - [Windows](#windows)
 - [macOS](#macos)
+- [Linux](#linux)
 
 ## Windows
 
@@ -135,3 +136,82 @@ Rune's test suite passes with every test binary, build script and proc-macro
 linked by hyprlnk; on Rune's own build, every function's unwind encoding and
 the whole `__eh_frame` match ld64.lld's; on the x86_64 test programs, every
 function matches lld's instruction for instruction.
+
+## Linux
+
+### Machines and outputs
+
+| | x86-64 | x86 | AArch64 | ARM | RISC-V | POWER | s390x | LoongArch |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Executables (PIE, `-no-pie`), shared objects | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| Static executables, `-static-pie` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| TLS relaxed to initial-exec / local-exec | ✅ | ✅ | ✅ | — | — | — | ✅ | — |
+| GOT loads relaxed to address computations | ✅ | — | — | — | — | — | — | — |
+
+ABIs: glibc and musl. ARM is EABI (soft and hard float, ARM and Thumb-2
+code, ARMv5TE and later); RISC-V is RV64 (RV32 is implemented but untested);
+POWER is little-endian ppc64 with the ELFv2 ABI (big-endian ELFv2 is
+implemented but untested; ELFv1, which `powerpc64-unknown-linux-gnu` uses, is
+not supported); LoongArch is LA64. Every architecture is tested by linking
+Rust programs that unwind, use threads and thread locals, and print
+backtraces, and running them under qemu-user.
+
+Not supported: big-endian AArch64 and ARM, ARMv4T, MIPS, SPARC, 32-bit
+PowerPC, x32, Android's conventions.
+
+### Inputs
+
+- ELF relocatable objects from GCC, Clang/LLVM (rustc) and GNU as, with COMDAT
+  groups, mergeable sections and debug sections compressed with zlib or zstd.
+- Archives: rlibs and `.a` files, with or without a symbol table, and thin
+  archives.
+- Shared objects, with their symbol versions; input linker scripts (`GROUP`,
+  `INPUT`, `AS_NEEDED`, `SEARCH_DIR`), as glibc's `libc.so` is.
+- Response files, with GNU quoting; `cc`-style command lines, which hyprlnk
+  hands to the C compiler (see [Linux](linux.md#with-cargo-or-rustc)).
+
+Not supported: LLVM bitcode and GCC's LTO objects (linker-plugin LTO), `-r`,
+`--emit-relocs`, linker scripts with `SECTIONS`, `MEMORY` or `PHDRS`.
+
+### Features
+
+| | |
+| --- | --- |
+| Symbol resolution | GNU ld's precedence (strong, weak, common, shared); archives searched as one group; COMDAT groups (first copy wins); `--wrap`, `--defsym`, `-u`, `--require-defined`, `--allow-multiple-definition`; `__start_`/`__stop_` and the usual linker symbols |
+| Garbage collection | `--gc-sections` with `.init_array`/`.fini_array`, notes, `SHF_GNU_RETAIN` and `__start_`/`__stop_` sections kept; `.eh_frame` entries follow their functions; `--print-gc-sections` |
+| Dynamic linking | `.dynamic`, `.dynsym`, `.gnu.hash`/`.hash`, symbol versions (version scripts, `--dynamic-list`, `--export-dynamic`, `-Bsymbolic`), `DT_NEEDED` with `--as-needed`, rpath/runpath, soname, copy relocations, canonical PLT entries |
+| Relocations | every relocation compilers emit for the supported machines; IFUNC (also in static executables); RELRO, `-z now`, `-z text` |
+| Thread locals | general-dynamic, local-dynamic, initial-exec, local-exec and TLS descriptors |
+| Unwind | `.eh_frame` and `.eh_frame_hdr`; ARM's `.ARM.exidx` sorted with a closing `EXIDX_CANTUNWIND` |
+| Debug info | DWARF copied and relocated, mergeable sections deduplicated, tombstones for removed code |
+| Diagnostics | `--time`, `-Map`/`-M`, `--dependency-file`, `--trace`, `--reproduce`; undefined symbols with their first referrer, demangled |
+| Determinism | content-hash build IDs; the same inputs give the same bytes |
+
+### Differences from GNU ld, lld and mold
+
+- **No library directories of its own** (as lld): `-l` looks in the `-L`
+  directories, which compiler drivers pass.
+- **Archives need no `--start-group`**: all of them are searched as one group,
+  as lld and mold do.
+- **Executables are written into the old output** when that is safe — a
+  regular file of the user's with no other links that isn't running — as mold
+  and wild do; otherwise, and always for shared objects, into a new file.
+- **Hidden symbols are local** in `.symtab`, as lld writes them.
+- **Build IDs are content hashes**; `--build-id=sha1` or `md5` choose the size,
+  not the algorithm (tools only compare build IDs).
+- `.comment` gets a `Linker: hyprlnk <version>` line, as lld and mold add
+  theirs.
+- **Not yet**: range-extension thunks (AArch64 branches farther than 128 MiB,
+  ARM ones beyond their range are reported), linker relaxation on RISC-V and
+  LoongArch, `-z pack-relative-relocs` (accepted; relative relocations are
+  written as `RELA`), `--icf` (accepted, ignored), `--compress-debug-sections`
+  (written uncompressed).
+
+### Tested with
+
+Rust 1.98 (`x86_64-unknown-linux-gnu` natively; `x86_64`, `i686`, `aarch64`,
+`armv7`, `riscv64gc`, `powerpc64le`, `loongarch64` musl targets and the glibc
+ones with Debian sysroots, under qemu-user), GCC 16 and Clang 23 (C, C++ with
+exceptions and RTTI), glibc 2.44, binutils 2.47 for comparison. Rune's test
+suite passes with every test binary, build script and proc-macro linked by
+hyprlnk.

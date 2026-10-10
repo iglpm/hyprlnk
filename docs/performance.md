@@ -1,5 +1,63 @@
 # Performance
 
+- [Linux](#linux) · [macOS](#macos) · [Windows](#windows) · [Measuring your own links](#measuring-your-own-links)
+
+## Linux
+
+Three links, captured with `HYPRLNK_REPRODUCE` and replayed with each linker:
+Rune's own `rune` and hyprlnk's own `hyprlnk` in the dev profile (full debug
+info), and Rune's link again with `-S` (no debug info, like a release build).
+Intel Core i5-10400F (6 cores, 12 threads), Linux 7.2, inputs in the file
+cache, outputs on tmpfs; the linkers take turns, 11 rounds after a warm-up,
+wall-clock time including process startup.
+
+| | hyprlnk | wild 0.10 | mold 3.0 | lld 23.1 |
+| --- | ---: | ---: | ---: | ---: |
+| Rune, dev (3,640 objects, 600 MB in, 308 MB out) | 258 ms | **255 ms** | 427 ms | 478 ms |
+| hyprlnk, dev (716 MB in, 381 MB out) | 267 ms | **253 ms** | 386 ms | 409 ms |
+| Rune, `-S` (77 MB out) | 138 ms | **100 ms** | 256 ms | 311 ms |
+
+hyprlnk links in 55–70 % of mold's time and 45–65 % of lld's. wild is ahead:
+by 1–5 % with debug info and by a third without it. The outputs are
+equivalent; hyprlnk's are the smallest (wild's are up to 2 %, lld's 1–4 % and
+mold's 9–34 % larger).
+
+On a disk the picture is the same with more noise: Linux throttles writers
+once a few hundred megabytes are waiting to be written back, and a relink
+writes a whole executable. hyprlnk, like mold and wild, writes an executable
+into the previous one's file when that is safe, which spares the kernel
+allocating fresh pages (see [Linux](linux.md#linking-the-parts-that-matter)).
+
+`--time` for Rune's dev link (`HYPRLNK_PROF=1` adds CPU time and busy cores):
+
+```text
+hyprlnk:      3.85 ms  open inputs
+hyprlnk:     10.86 ms  parse inputs
+hyprlnk:     14.54 ms  intern symbols
+hyprlnk:      5.85 ms  load archive members
+hyprlnk:     13.36 ms  resolve symbols
+hyprlnk:      3.28 ms  parse .eh_frame
+hyprlnk:     24.00 ms  gc sections
+hyprlnk:      1.58 ms  scan relocations
+hyprlnk:      2.35 ms  GOT, PLT, dynamic symbols
+hyprlnk:     49.40 ms  merge strings and constants
+hyprlnk:      9.70 ms  output sections
+hyprlnk:     16.17 ms  layout
+hyprlnk:     98.33 ms  write sections
+hyprlnk:      0.55 ms  build ID
+hyprlnk:      4.97 ms  commit output
+```
+
+| Phase | What happens | What makes it fast |
+| --- | --- | --- |
+| Open inputs | map files, list archive members, follow input scripts | parallel; archive members' headers read on all threads |
+| Parse, intern | sections and symbols of every object; names to the symbol table | big files first; names hashed (128-bit) on the parsing threads and bucketed by shard; each shard keeps each symbol's best definition, no locks |
+| Load archive members | waves of members defining what is undefined | each wave parsed and ranked in parallel |
+| gc sections | mark from the roots; decide what each relocation needs | work-stealing marking with atomic flags; each section's relocations scanned (GOT, PLT, TLS, copies) right after it is marked, while they are in cache |
+| Merge strings | `.debug_str`, `.rodata.str*` and friends deduplicated | split and hashed per section, deduplicated per shard, offsets filled in per section in order; the debug ones run beside resolution and gc |
+| Layout, write | addresses; sections copied and relocated | all in parallel into the mapped output; each writer hashes what it wrote, so the build ID costs half a millisecond |
+| Exit | | the process forks first: the parent exits once the output is complete, the child tears down |
+
 ## macOS
 
 Linking Rune's own `rune` (dev profile): 258 objects and 202 rlibs on the
@@ -79,6 +137,18 @@ With `/OPT:ICF`, hyprlnk's release binaries are as small as lld's or smaller
 shared between functions is folded too.
 
 ## Measuring your own links
+
+On Linux, capture with `HYPRLNK_REPRODUCE` and replay with each linker (the
+saved command line is GNU ld's, which all of them take):
+
+```sh
+HYPRLNK_REPRODUCE=/tmp/links cargo build      # with hyprlnk as the linker (or under Rune)
+cd /tmp/links/myapp-1234
+hyprlnk -flavor gnu @link.rsp -o h --time
+mold @link.rsp -o m
+wild @link.rsp -o w
+ld.lld @link.rsp -o l
+```
 
 On macOS, capture with `HYPRLNK_REPRODUCE` and replay with each linker:
 

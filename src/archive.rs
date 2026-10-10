@@ -163,6 +163,68 @@ impl<'a> Archive<'a> {
     }
 }
 
+/// The members of an archive in order, without reading its symbol table. In a thin archive
+/// (`!<thin>`) members are other files: `data` is empty and `name` is the path, relative to
+/// the archive's directory unless absolute.
+pub fn list_members(data: &[u8]) -> Result<(bool, Vec<Member<'_>>)> {
+    let thin = is_thin_archive(data);
+    if !thin && !is_archive(data) {
+        bail!("not an archive");
+    }
+    let mut longnames: &[u8] = &[];
+    let mut out = Vec::new();
+    let mut off = MAGIC.len();
+    while off + HEADER <= data.len() {
+        let h = &data[off..off + HEADER];
+        if &h[58..60] != b"`\n" {
+            bail!("bad archive member header at offset {off}");
+        }
+        let size = parse_decimal(&h[48..58])
+            .ok_or_else(|| err!("bad archive member size at offset {off}"))?;
+        let start = off + HEADER;
+        let raw = trim_trailing(&h[..16], b' ');
+        let special = matches!(
+            raw,
+            b"/" | b"/SYM64/" | b"//" | b"__.SYMDEF" | b"__.SYMDEF SORTED" | b"/<ECSYMBOLS>/"
+        ) || raw.starts_with(b"#1/__.SYMDEF");
+        // Thin archives store only the symbol and name tables.
+        let stored = if thin && !special { 0 } else { size };
+        if start + stored > data.len() {
+            bail!("archive member at offset {off} runs past the end of the file");
+        }
+        let mut body = &data[start..start + stored];
+        if raw == b"//" {
+            longnames = body;
+        } else if !special {
+            let name = if let Some(len) = raw.strip_prefix(b"#1/").and_then(parse_decimal) {
+                if len > body.len() {
+                    bail!("bad BSD member name length");
+                }
+                let (n, rest) = body.split_at(len);
+                body = rest;
+                String::from_utf8_lossy(trim_trailing(n, 0)).into_owned()
+            } else if let Some(idx) = raw.strip_prefix(b"/").and_then(parse_decimal) {
+                let rest = longnames.get(idx..).unwrap_or(&[]);
+                let end = rest
+                    .iter()
+                    .position(|&b| b == 0 || b == b'\n')
+                    .unwrap_or(rest.len());
+                let n = &rest[..end];
+                String::from_utf8_lossy(n.strip_suffix(b"/").unwrap_or(n)).into_owned()
+            } else {
+                String::from_utf8_lossy(raw.strip_suffix(b"/").unwrap_or(raw)).into_owned()
+            };
+            out.push(Member {
+                name,
+                data: body,
+                offset: off as u32,
+            });
+        }
+        off = start + stored + (stored & 1);
+    }
+    Ok((thin, out))
+}
+
 fn parse_gnu_symtab(body: &[u8], wide: bool) -> Result<Vec<ArchiveSymbol<'_>>> {
     let w = if wide { 8 } else { 4 };
     let read = |off: usize| -> Option<u64> {
@@ -422,6 +484,51 @@ mod tests {
         assert_eq!(ar.symbols.len(), 1);
         assert_eq!(ar.symbols[0].name, b"_f");
         assert_eq!(ar.symbols[0].offset, 0x60);
+    }
+
+    #[test]
+    fn lists_members_of_regular_and_thin_archives() {
+        let mut w = ArchiveWriter::new();
+        w.add("a.o", b"AAAA".to_vec(), vec![b"f".to_vec()]);
+        w.add("a-long-member-name.o", b"BBB".to_vec(), vec![]);
+        let bytes = w.finish();
+        let (thin, m) = list_members(&bytes).unwrap();
+        assert!(!thin);
+        assert_eq!(m.len(), 2);
+        assert_eq!((m[0].name.as_str(), m[0].data), ("a.o", &b"AAAA"[..]));
+        assert_eq!(
+            (m[1].name.as_str(), m[1].data),
+            ("a-long-member-name.o", &b"BBB"[..])
+        );
+
+        let mut t = THIN_MAGIC.to_vec();
+        // Padded to an even size, as `ar` writes it.
+        let names = b"dir/x.o/\n\n";
+        t.extend_from_slice(
+            format!(
+                "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n",
+                "//",
+                0,
+                0,
+                0,
+                0,
+                names.len()
+            )
+            .as_bytes(),
+        );
+        t.extend_from_slice(names);
+        t.extend_from_slice(
+            format!(
+                "{:<16}{:<12}{:<6}{:<6}{:<8}{:<10}`\n",
+                "/0", 0, 0, 0, 644, 1234
+            )
+            .as_bytes(),
+        );
+        let (thin, m) = list_members(&t).unwrap();
+        assert!(thin);
+        assert_eq!(m.len(), 1);
+        assert_eq!(m[0].name, "dir/x.o");
+        assert!(m[0].data.is_empty());
     }
 
     #[test]

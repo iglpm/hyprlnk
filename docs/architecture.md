@@ -1,11 +1,11 @@
 # Architecture
 
 hyprlnk is a library (`hyprlnk`) with a thin binary on top, and one backend
-per object format: PE/COFF in `src/coff/`, Mach-O in `src/macho/`. `lib.rs`
-picks one from `-flavor`, the program's name (`ld64.*` → Mach-O,
-`lld-link` → COFF) or the arguments themselves. Each backend is organized as
-phases of one link, each a module adding methods to the `Linker` in its
-`resolve.rs`.
+per object format: PE/COFF in `src/coff/`, Mach-O in `src/macho/`, ELF in
+`src/elf/`. `lib.rs` picks one from `-flavor`, the program's name (`ld64.*` →
+Mach-O, `lld-link` → COFF, `ld` and `ld.*` → ELF on Linux) or the arguments
+themselves. Each backend is organized as phases of one link, each a module
+adding methods to the linker context in its `resolve.rs`.
 
 ## PE/COFF
 
@@ -87,6 +87,52 @@ before `__LINKEDIT`, and `__LINKEDIT` — then hands both to helper threads to
 write while the UUID and the code signature are computed; the first page
 (with the UUID) and the signature go last.
 
+## ELF
+
+```text
+command line ─▶ config ─▶ input ─▶ parse ─▶ intern ─▶ resolve ─▶ gc ─▶ scan ─▶ merge ─▶ layout ─▶ write ─┬─▶ sections, relocated
+(cc line: the    (GNU ld   (map,    (objects,  (names,   (archive   (live   (GOT,  (strings,  (output    (in    │   ∥ merged strings
+ C compiler       options)  archives, sections) hashes,   waves,     sections) PLT,  constants) sections,  parallel)│   ∥ .eh_frame ∥ symtab
+ runs hyprlnk               scripts)            ranks)    COMDATs)          TLS,             segments,          └─▶ build ID from the
+ as its ld)                                                                 copies)           addresses)              writers' hashes
+```
+
+| File | |
+| --- | --- |
+| `elf/mod.rs` | entry point (`link_main`), the forked early exit, the pipeline, small helpers |
+| `elf/driver.rs` | `cc` command lines: running the C compiler with hyprlnk as its `ld` |
+| `elf/config.rs` | GNU ld options → `Config` |
+| `elf/script.rs` | input scripts (`GROUP`, `INPUT`, `AS_NEEDED`), version scripts, dynamic lists |
+| `elf/input.rs` | library search, mapping and classifying inputs in parallel, archives and thin archives |
+| `elf/target.rs` | `Machine` and the `Target` trait: everything machine-specific is behind it |
+| `elf/object.rs` | ELF objects (one pass over the section table) and shared objects |
+| `elf/symbols.rs` | the global symbol table: sharded, deterministic interning by 128-bit name hashes; definition ranks |
+| `elf/resolve.rs` | the `Ctx`; parsing, interning, archive waves, COMDAT groups, undefined and duplicate symbols, symbol properties |
+| `elf/ehframe.rs` | `.eh_frame` records in objects; the output `.eh_frame` and `.eh_frame_hdr` |
+| `elf/gc.rs` | `--gc-sections`: roots, work-stealing marking, `.ARM.exidx` |
+| `elf/scan.rs` | what each relocation needs: GOT, PLT, TLS slots, copy relocations, dynamic relocations |
+| `elf/thunks.rs` | ARM/Thumb interworking thunks and ppc64 call stubs |
+| `elf/merge.rs` | SHF_MERGE sections: split, deduplicate by shard, fill in each input's table |
+| `elf/layout.rs` | output sections, the linker's own sections, order, segments, addresses |
+| `elf/dynamic.rs` | `.dynamic`, `.dynsym`, `.gnu.hash`/`.hash`, symbol versions |
+| `elf/write.rs` | copying and relocating sections, the symbol table, GOT and PLT, headers, the build ID |
+| `elf/mapfile.rs` | `-Map` |
+| `elf/reproduce.rs` | `--reproduce` |
+| `elf/prof.rs` | developer profiling (`HYPRLNK_PROF`) |
+| `elf/x86_64.rs`, `i386.rs`, `aarch64.rs`, `arm.rs`, `riscv.rs`, `ppc64.rs`, `s390x.rs`, `loongarch.rs` | each machine: relocations, relaxations, TLS models, PLT entries |
+
+The ELF backend keeps sections whole (the unit of garbage collection) and
+reads symbols and relocations from the mapped files when it needs them.
+Names are interned in two parallel passes: per group of files, names are
+hashed and bucketed by shard; per shard, they are inserted in file order,
+which also keeps each symbol's best definition. Archive members load in
+waves, each parsing its members in parallel. Writing copies and relocates
+sections into the memory-mapped output on all threads while merged strings,
+`.eh_frame`, the symbol table, the GOT and the headers are written
+alongside; each writer hashes what it wrote, and the build ID combines those
+hashes. A link run as a program forks first: the parent exits as soon as the
+output is complete, and the child tears the process down.
+
 ## Principles
 
 **Borrow, don't copy.** Inputs are memory-mapped into an `Arena` that lives
@@ -135,11 +181,15 @@ sizes, exception-table formats. The rest of the linker asks it.
 ## Rune integration
 
 Rune passes `-C linker=<rune>` to `rustc` (and, for Apple targets,
-`-C linker-flavor=ld64.lld`) and sets `RUNE_HYPRLNK` on the compiler; `rune`'s `main` sees the variable and runs
-`hyprlnk::main_with_args` instead of its own command line. The linker
-setting a unit is cached under is `rune:hyprlnk@<version>`, independent of
-where `rune` is installed. See `crates/rune-common/src/linker.rs` in the
-Rune repository.
+`-C linker-flavor=ld64.lld`) and sets `RUNE_HYPRLNK` on the compiler; `rune`'s
+`main` sees the variable and runs `hyprlnk::main_with_args` instead of its own
+command line. On Linux, rustc hands it a `cc` command line: hyprlnk runs the
+target's C compiler (`HYPRLNK_CC`, which Rune sets from
+`target.<triple>.linker`, else `cc`) with a directory holding `rune` as `ld`,
+and the compiler runs `rune` again as the linker. The linker setting a unit
+is cached under is `rune:hyprlnk@<version>` (plus the C compiler, on Linux),
+independent of where `rune` is installed. See
+`crates/rune-common/src/linker.rs` in the Rune repository.
 
 ## Testing
 
@@ -154,4 +204,11 @@ Rune repository.
   `dbghelp`, x86 programs, ARM64 images compared byte-for-byte with
   `lld-link`, reproducible output. Parts skip when a target or tool is
   missing.
-- At scale: Rune's own test suite with `RUNE_BUILD_LINKER=hyprlnk`.
+- `tests/elf.rs`: end-to-end on Linux with rustc, gcc/clang and g++ —
+  unwinding, threads and thread locals, backtraces, `cc`-style command lines,
+  cdylibs and Rust dylibs, proc-macros loaded by rustc, static musl
+  executables, C with commons, TLS and constructors, C++ exceptions and RTTI,
+  version scripts, valid DWARF, `ld` options, reproducible output, writing
+  outputs in place only when safe, and every other architecture under
+  qemu-user when the emulator and the Rust target are installed.
+- At scale: Rune's own test suite, which Rune links with hyprlnk by default.
