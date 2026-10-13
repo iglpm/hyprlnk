@@ -1,105 +1,75 @@
 # Contributing to hyprlnk
 
-Thanks for helping make linking faster. Bug reports, benchmarks on real
-projects and pull requests are all welcome. Please follow the
-[code of conduct](CODE_OF_CONDUCT.md).
+Thank you for helping make linking faster for everyone. We welcome bug reports, real-world benchmark data, documentation improvements, and pull requests.
 
-## Reporting a problem
+Please review our [Code of Conduct](CODE_OF_CONDUCT.md) before participating in the community.
 
-A link that fails, or an image that behaves differently than with
-`link.exe`/`lld-link` (Windows) or Apple's `ld`/`ld64.lld` (macOS), is a bug.
-The best report comes with a replayable link:
+## Reporting an Issue
+
+If a link fails or emits an image that behaves differently than `link.exe`, `lld-link`, Apple's `ld`, or GNU `ld`, that is a bug.
+
+The fastest way to help us fix the issue is with a reproducible archive:
 
 ```powershell
-$env:HYPRLNK_REPRODUCE = "C:\repro"     # or pass /REPRODUCE:C:\repro
-<run the build that fails>
+# Windows
+$env:HYPRLNK_REPRODUCE = "C:\repro"
+<run your failing build>
 ```
 
 ```sh
-HYPRLNK_REPRODUCE=/tmp/repro <run the build that fails>
+# Linux & macOS
+HYPRLNK_REPRODUCE=/tmp/repro <run your failing build>
 ```
 
-Zip `<dir>/<output>-<pid>/` (it holds every input and a `link.rsp`) and
-attach it to a [bug report](https://github.com/runepm/hyprlnk/issues/new/choose),
-after checking it contains nothing private. See
-[troubleshooting](docs/troubleshooting.md).
+This generates a directory `<dir>/<output>-<pid>/` containing the input object files, libraries, and exact `link.rsp` response file. Ensure the bundle contains no proprietary code or secrets, zip it, and attach it to a [new GitHub issue](https://github.com/runepm/hyprlnk/issues/new/choose).
 
-Security issues: please follow [SECURITY.md](SECURITY.md) instead of opening
-an issue.
+For security vulnerabilities, please refer directly to [SECURITY.md](SECURITY.md).
 
-## Development
+## Local Development Workflow
 
-hyprlnk is a Rust crate with no build-time dependencies beyond Rust itself.
-It is developed both on its own and inside the
-[Rune](https://github.com/runepm/rune) repository, which includes it as a
-submodule at `hyprlnk/` and builds it into the `rune` executable.
+hyprlnk is written in standard Rust with zero external build-time dependencies. It can be developed standalone or directly within the [Rune](https://github.com/runepm/rune) monorepo (as a submodule at `hyprlnk/`):
 
 ```sh
-rune build            # or: cargo build
-rune test             # unit tests, plus end-to-end links on Windows or macOS
-rune build --release  # for benchmarking
+# Build debug binary
+cargo build         # or: rune build
+
+# Run unit tests and integration suites
+cargo test          # or: rune test
+
+# Build optimized release binary for benchmarking
+cargo build --release
 ```
 
-The end-to-end tests link real programs and run them. `tests/link.rs` (on
-Windows) uses `rustc -C linker=hyprlnk` and needs the MSVC build tools;
-parts also use the `i686-pc-windows-msvc` and `aarch64-pc-windows-msvc`
-targets and `lld-link`. `tests/macho.rs` (on macOS) uses rustc and clang
-(the Command Line Tools); parts use the `x86_64-apple-darwin` target
-(running it needs Rosetta) and arm64e. Each part skips itself when what it
-needs is missing.
+### Testing Against End-to-End Workloads
 
-Before sending a pull request:
+hyprlnk features extensive platform test suites:
+- **Windows (`tests/link.rs`)**: Tests end-to-end linking with MSVC build tools, verifying unwinding, TLS, resources, and PDB readability via `dbghelp`.
+- **macOS (`tests/macho.rs`)**: Verifies Mach-O linking with clang and rustc, testing chained fixups, Objective-C stubs, code-signing, and debug maps with `dsymutil`.
+- **Linux (`tests/elf.rs`)**: Tests ELF linking across glibc and musl, verifying DWARF info, shared libraries, and multiple CPU targets under QEMU.
 
-```powershell
-cargo fmt
+Before opening a pull request, verify code health:
+
+```sh
+cargo fmt --all -- --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
 
-### Testing against real links
+### Benchmarking Changes
 
-For changes to how images or debug info are written, check a large real
-link against lld. On Windows:
+Performance is our primary goal. If you are submitting an optimization:
+1. Benchmark a reproducible large link using `/TIME` or `--time`.
+2. Compare before and after results over multiple runs on an unloaded machine.
+3. Include your hardware specs and benchmark numbers in your pull request.
+4. Ensure outputs remain strictly deterministic (identical inputs must produce identical binary outputs).
 
-```powershell
-$env:HYPRLNK_REPRODUCE = "C:\links"; rune build -p <some big binary>
-cd C:\links\<name>-<pid>
-hyprlnk @link.rsp /OUT:h.exe /TIME
-lld-link @link.rsp /OUT:l.exe
-llvm-pdbutil dump --all h.pdb > NUL     # must succeed
-```
+## Code Guidelines
 
-On macOS:
-
-```sh
-HYPRLNK_REPRODUCE=/tmp/links rune build -p <some big binary>
-cd /tmp/links/<name>-<pid>
-hyprlnk -flavor darwin @link.rsp -o h --time
-ld64.lld @link.rsp -o l
-codesign -v h && dyld_info -fixups h > /dev/null && dsymutil -s h > /dev/null
-```
-
-Inside the Rune repository, `RUNE_BUILD_LINKER=hyprlnk rune test --workspace`
-links Rune's whole test suite with your build.
-
-### Performance work
-
-Measure before and after with `/TIME` on a reproduced large link, best of
-several runs on a quiet machine, and put the numbers in the pull request.
-Keep the output deterministic: the same inputs must give the same bytes.
-
-## Code
-
-- [Architecture](docs/architecture.md) explains the phases and the source
-  layout.
-- Comments say *why*; keep them up to date with the code.
-- Machine-specific details belong in `src/coff/arch.rs`.
-- New behavior comes with a test: a unit test next to the code, or an
-  end-to-end one in `tests/link.rs`.
-- Commit messages: a short summary line, then what changed and why.
+- **Architecture**: Review [Linker Architecture](docs/architecture.md) for an overview of linking phases and codebase layout.
+- **Clarity**: Write comments explaining *why* a particular optimization or layout decision was made.
+- **Tests**: Accompany new features or bug fixes with a unit test or end-to-end integration test.
+- **Git Commits**: Use descriptive commit messages with a concise summary line followed by technical context.
 
 ## License
 
-By contributing, you agree that your contributions are dual-licensed under
-the [MIT](LICENSE-MIT.md) and [Apache 2.0](LICENSE-APACHE.md) licenses, as
-the project is.
+By contributing to hyprlnk, you agree that your contributions are dual-licensed under both the [MIT License](LICENSE-MIT.md) and the [Apache License, Version 2.0](LICENSE-APACHE.md).

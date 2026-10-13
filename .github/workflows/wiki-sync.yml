@@ -1,0 +1,107 @@
+name: Sync Docs to Wiki
+
+on:
+  push:
+    branches: [main, master]
+    paths:
+      - 'docs/**'
+      - 'README.md'
+      - '.github/workflows/wiki-sync.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  GIT_AUTHOR_NAME: "runified"
+  GIT_AUTHOR_EMAIL: "runified@runepm.com"
+  GIT_COMMITTER_NAME: "runified"
+  GIT_COMMITTER_EMAIL: "runified@runepm.com"
+
+jobs:
+  wiki-sync:
+    name: Publish Documentation to Wiki
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Check repository visibility and wiki status
+        id: check-wiki
+        env:
+          AUTH_TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          REPO_INFO=$(curl -sSL \
+            -H "Authorization: Bearer $AUTH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "${{ github.api_url }}/repos/${{ github.repository }}")
+
+          IS_PRIVATE=$(echo "$REPO_INFO" | jq -r '.private // false')
+          HAS_WIKI=$(echo "$REPO_INFO" | jq -r '.has_wiki // false')
+
+          echo "Repository private status: $IS_PRIVATE"
+          echo "Repository wiki enabled: $HAS_WIKI"
+
+          if [ "$IS_PRIVATE" = "true" ]; then
+            echo "Repository is private. Skipping wiki sync."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [ "$HAS_WIKI" != "true" ]; then
+            echo "Wiki is disabled for this repository. Skipping wiki sync."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Synchronize docs to GitHub Wiki
+        if: steps:check-wiki.outputs.skip != 'true'
+        env:
+          AUTH_TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          WIKI_URL="https://x-access-token:${AUTH_TOKEN}@github.com/${{ github.repository }}.wiki.git"
+
+          echo "Cloning repository wiki..."
+          if ! git clone "$WIKI_URL" wiki_clone; then
+            echo "Could not clone wiki repository. It might be uninitialized. Skipping."
+            exit 0
+          fi
+
+          cd wiki_clone
+          git config user.name "$GIT_COMMITTER_NAME"
+          git config user.email "$GIT_COMMITTER_EMAIL"
+
+          # 1. Populate Home.md from README.md
+          if [ -f ../README.md ]; then
+            cp ../README.md Home.md
+            # Rewrite relative docs/ links so they point to wiki page names
+            sed -i -E 's|\(docs/([a-zA-Z0-9_-]+)\.md\)|\(\1\)|g' Home.md
+            sed -i -E 's|\(docs/([a-zA-Z0-9_-]+)\)|\(\1\)|g' Home.md
+          fi
+
+          # 2. Copy markdown documentation files to wiki root
+          if [ -d ../docs ]; then
+            find ../docs -maxdepth 1 -name "*.md" -exec cp {} . \;
+            # Rewrite relative doc links inside wiki pages
+            for f in *.md; do
+              [ -f "$f" ] || continue
+              sed -i -E 's|\(docs/([a-zA-Z0-9_-]+)\.md\)|\(\1\)|g' "$f"
+              sed -i -E 's|\(([a-zA-Z0-9_-]+)\.md\)|\(\1\)|g' "$f"
+            done
+          fi
+
+          # 3. Check for modifications and push
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "No documentation changes detected. Wiki is already up to date."
+            exit 0
+          fi
+
+          git add .
+          git commit -m "docs: sync documentation to wiki [skip ci]"
+          git push origin HEAD
+          echo "Wiki documentation published successfully."
