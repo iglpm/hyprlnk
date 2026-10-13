@@ -11,6 +11,10 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  GIT_AUTHOR_NAME: "runified"
+  GIT_AUTHOR_EMAIL: "runified@runepm.com"
+  GIT_COMMITTER_NAME: "runified"
+  GIT_COMMITTER_EMAIL: "runified@runepm.com"
 
 jobs:
   lint:
