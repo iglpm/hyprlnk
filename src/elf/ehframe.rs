@@ -47,6 +47,8 @@ pub struct EhFrameInfo {
     pub objs: Vec<ObjEh>,
     pub size: u64,
     pub nfdes: u64,
+    /// The output section's address, once laid out.
+    pub addr: u64,
 }
 
 impl ObjEh {
@@ -132,6 +134,32 @@ pub fn parse_obj<T: Target>(ctx: &Ctx<'_, T>, o: &Object<'_>) -> Result<ObjEh> {
     Ok(eh)
 }
 
+impl EhFrameInfo {
+    /// The address of offset `value` in input `.eh_frame` section `sec` of object `oi`: in the
+    /// record it falls in, if that was kept, else counted from the start of the object's records.
+    /// GCC's crtbegin defines `__EH_FRAME_BEGIN__` at the start of its (empty) `.eh_frame`;
+    /// where it registers the frames itself (musl), libgcc walks the records from there to the
+    /// terminator. (Counting on outside records keeps a PC-relative bias: x86-64's
+    /// `lea __EH_FRAME_BEGIN__(%rip)` is `.eh_frame - 4`.)
+    pub fn symbol_addr(&self, oi: usize, sec: u32, value: u64) -> u64 {
+        let Some(eh) = self.objs.get(oi) else {
+            return self.addr.wrapping_add(value);
+        };
+        let base = self.addr + eh.out_off;
+        eh.cies
+            .iter()
+            .chain(&eh.fdes)
+            .find(|r| {
+                r.sec == sec
+                    && r.out != NONE
+                    && (r.off as u64..r.off as u64 + r.size as u64).contains(&value)
+            })
+            .map_or(base.wrapping_add(value), |r| {
+                base + r.out as u64 + (value - r.off as u64)
+            })
+    }
+}
+
 /// The input section a symbol of `o` is defined in, if in `o`.
 fn target_section<T: Target>(ctx: &Ctx<'_, T>, o: &Object<'_>, sym: u32) -> u32 {
     if sym < o.first_global {
@@ -159,6 +187,12 @@ fn target_section<T: Target>(ctx: &Ctx<'_, T>, o: &Object<'_>, sym: u32) -> u32 
 }
 
 impl<T: Target> Ctx<'_, T> {
+    /// Offset `value` of `o`'s input `.eh_frame` section `sec`, in the output.
+    pub fn eh_frame_addr(&self, o: &Object<'_>, sec: u32, value: u64) -> u64 {
+        self.ehframe
+            .symbol_addr(self.obj_index(o) as usize, sec, value)
+    }
+
     pub fn parse_eh_frames(&mut self) -> Result<()> {
         let objs: Vec<Result<ObjEh>> = self
             .objs
@@ -229,8 +263,14 @@ impl<T: Target> Ctx<'_, T> {
             nfdes += eh.live_fdes;
         }
         self.ehframe.nfdes = nfdes;
-        // A zero terminator, for unwinders that walk the section instead of using the table.
-        self.ehframe.size = if off > 0 { off + 4 } else { 0 };
+        // A zero terminator, for unwinders that walk the section instead of using the table;
+        // also when no record survives but an input has the section, as crtbegin's
+        // `__EH_FRAME_BEGIN__` may then still be walked.
+        let inputs = self
+            .objs
+            .iter()
+            .any(|o| o.alive.load(Ordering::Relaxed) && !o.eh_frames.is_empty());
+        self.ehframe.size = if off > 0 || inputs { off + 4 } else { 0 };
     }
 
     /// Write `.eh_frame` at `buf` (address `addr`) and return the `.eh_frame_hdr` table:

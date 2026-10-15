@@ -232,6 +232,60 @@ int main(void) {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// A symbol defined in an input `.eh_frame` is where that object's records went. GCC's
+/// crtbegin defines `__EH_FRAME_BEGIN__` so, in an empty `.eh_frame`, and where glibc isn't the
+/// C library (musl) passes it to libgcc's `__register_frame_info`, which walks the records from
+/// there to the zero terminator. It once resolved to 0, the ELF header, and every dynamically
+/// linked musl program that loaded libgcc_s crashed before `main`.
+#[test]
+fn symbols_in_eh_frame_point_at_the_records() {
+    if !has_tool("cc") {
+        return;
+    }
+    let dir = scratch("ehsym");
+    // crtbegin's marker, static in an object linked first: its code reaches it through a local
+    // symbol (or the section symbol, as x86-64's assembler writes it).
+    std::fs::write(
+        dir.join("begin.c"),
+        "static const char eh_begin[] __attribute__((section(\".eh_frame\"), aligned(4), used)) = {};\n\
+         const char *eh_frame_begin(void) { return eh_begin; }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("main.c"),
+        r#"
+#include <stdio.h>
+#include <string.h>
+const char *eh_frame_begin(void);
+int main(void) {
+    /* What __register_frame_info does with it: records up to a zero length. */
+    const char *p = eh_frame_begin();
+    unsigned len;
+    int n = 0;
+    for (memcpy(&len, p, 4); len != 0; memcpy(&len, p, 4)) {
+        if (len == 0xffffffff || ++n > 1000000) return 2;
+        p += 4 + len;
+    }
+    printf("%s\n", n > 0 ? "records" : "none");
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    ok(Command::new("cc").current_dir(&dir).args([
+        "-c",
+        "-fno-asynchronous-unwind-tables",
+        "begin.c",
+    ]));
+    ok(Command::new("cc")
+        .current_dir(&dir)
+        .arg(format!("-B{}", ld_dir(&dir).display()))
+        .args(["-fPIE", "-pie", "begin.o", "main.c", "-o", "eh"]));
+    linked_by_hyprlnk(&dir.join("eh"));
+    assert_eq!(run(&dir, "eh", &[]), "records\n");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_cdylib_and_a_program_that_imports_from_it() {
     let dir = scratch("cdylib");

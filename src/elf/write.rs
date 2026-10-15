@@ -246,6 +246,17 @@ impl<'c, 'a, T: Target> RelocCtx<'c, 'a, T> {
                         .unwrap_or(0)
                         .wrapping_add(r.addend as u64);
                 }
+                if sec.kind == SecKind::EhFrame {
+                    // Rebuilt from its records, not laid out as a section.
+                    return if s.ty() == STT_SECTION {
+                        self.ctx
+                            .eh_frame_addr(o, s.shndx, s.value.wrapping_add(r.addend as u64))
+                    } else {
+                        self.ctx
+                            .eh_frame_addr(o, s.shndx, s.value)
+                            .wrapping_add(r.addend as u64)
+                    };
+                }
                 return sec.addr.wrapping_add(s.value).wrapping_add(r.addend as u64);
             }
         }
@@ -293,6 +304,7 @@ impl<'c, 'a, T: Target> RelocCtx<'c, 'a, T> {
                 },
                 None => DebugTarget::Dead,
             },
+            SecKind::EhFrame => DebugTarget::Plain(self.ctx.eh_frame_addr(o, s.shndx, s.value)),
             _ if !sec.is_live() => DebugTarget::Dead,
             _ => DebugTarget::Plain(sec.addr.wrapping_add(s.value)),
         }
@@ -384,6 +396,10 @@ impl<'c, 'a, T: Target> RelocCtx<'c, 'a, T> {
                     Some(self.ctx.merged_addr(o, s.shndx, s.value)?.wrapping_add(a))
                 }
             }
+            SecKind::EhFrame if s.ty() == STT_SECTION => {
+                Some(self.ctx.eh_frame_addr(o, s.shndx, s.value.wrapping_add(a)))
+            }
+            SecKind::EhFrame => Some(self.ctx.eh_frame_addr(o, s.shndx, s.value).wrapping_add(a)),
             _ if !sec.is_live() => None,
             _ => Some(sec.addr.wrapping_add(s.value).wrapping_add(a)),
         }

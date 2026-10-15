@@ -1392,6 +1392,7 @@ impl<'a, T: Target> Ctx<'a, T> {
 
     /// Final addresses of global symbols (and the entry point).
     fn assign_addresses(&mut self, lay: &mut Layout) -> Result<()> {
+        self.ehframe.addr = lay.addr_of(Synthetic::EhFrame);
         let bss = lay.out(Synthetic::Bss).map(|o| o.addr).unwrap_or(0);
         let commons: HashMap<SymId, u64> = lay.commons.iter().copied().collect();
         let copy_base = bss + lay.bss_extra;
@@ -1500,6 +1501,8 @@ impl<'a, T: Target> Ctx<'a, T> {
         };
         match sec.kind {
             SecKind::Merge => self.merged_addr(o, s.shndx, s.value).unwrap_or(0),
+            // `.eh_frame` is rebuilt from its records rather than laid out as sections.
+            SecKind::EhFrame => self.eh_frame_addr(o, s.shndx, s.value),
             _ => sec.addr.wrapping_add(s.value),
         }
     }
