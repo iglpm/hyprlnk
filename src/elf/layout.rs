@@ -997,6 +997,20 @@ impl<'a, T: Target> Ctx<'a, T> {
             }
             cur_class = Some(class);
             let tls_bss = o.flags & SHF_TLS != 0 && o.nobits();
+            if tls_bss {
+                // `.tbss` has room in the TLS block only, not in its segment: it gets its
+                // aligned address, and what follows starts where the segment's file contents
+                // left off. Aligning the address for it, but not the file offset, put every
+                // later section of the segment (`.dynamic`, `.got`) away from where the loader
+                // maps it.
+                let addr = align_up(va, o.align);
+                o.addr = addr;
+                o.offset = off;
+                tls_lo = tls_lo.min(addr);
+                tls_hi = tls_hi.max(addr + o.size);
+                tls_align = tls_align.max(o.align);
+                continue;
+            }
             if o.align > page {
                 let a = o.align;
                 let na = align_up(va, a);

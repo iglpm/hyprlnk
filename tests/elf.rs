@@ -196,6 +196,42 @@ fn cc_style_command_lines_work_without_a_flavor() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// `.tbss` is aligned within the TLS block but takes no room in its segment: what follows it
+/// there (`.init_array`, `.dynamic`, `.got`) must keep the distance from the segment start its
+/// file offset says. A 4-byte `.tdata` before an 8-aligned `.tbss` once moved them 4 bytes
+/// in memory but not in the file, and the dynamic loader crashed reading `.dynamic` (ARM
+/// binaries, where 4-byte thread-locals are common, hit it first).
+#[test]
+fn sections_after_an_aligned_tbss_stay_where_the_file_puts_them() {
+    if !has_tool("cc") {
+        return;
+    }
+    let dir = scratch("tbss");
+    std::fs::write(
+        dir.join("tls.c"),
+        r#"
+#include <stdio.h>
+__thread int small __attribute__((aligned(8))) = 1;
+__thread long long wide __attribute__((aligned(8)));
+static int ran;
+__attribute__((constructor)) static void init(void) { ran = 1; }
+int main(void) {
+    wide = 41;
+    printf("%lld %d\n", wide + small, ran);
+    return 0;
+}
+"#,
+    )
+    .unwrap();
+    ok(Command::new("cc")
+        .current_dir(&dir)
+        .arg(format!("-B{}", ld_dir(&dir).display()))
+        .args(["-fPIE", "-pie", "tls.c", "-o", "tls"]));
+    linked_by_hyprlnk(&dir.join("tls"));
+    assert_eq!(run(&dir, "tls", &[]), "42 1\n");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_cdylib_and_a_program_that_imports_from_it() {
     let dir = scratch("cdylib");
