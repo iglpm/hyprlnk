@@ -1282,13 +1282,6 @@ impl<'a, T: Target> Ctx<'a, T> {
     pub fn write(&mut self, lay: &mut Layout, timer: &mut Timer) -> Result<()> {
         self.plt_base.store(lay.plt, Ordering::Relaxed);
         let size = lay.file_size as usize;
-        #[cfg(target_os = "linux")]
-        let file = if self.cfg.shared {
-            OutputFile::create_with_mode(&self.cfg.output, size, 0o777)
-        } else {
-            OutputFile::create_reusing(&self.cfg.output, size, 0o777)
-        };
-        #[cfg(not(target_os = "linux"))]
         let file = OutputFile::create_with_mode(&self.cfg.output, size, 0o777);
         let mut file =
             file.map_err(|e| err!("cannot create {}: {e}", self.cfg.output.display()))?;

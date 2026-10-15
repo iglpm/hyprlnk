@@ -220,7 +220,7 @@ pub fn remove_old_output_in_background(path: &Path) {
     unlink_in_background(&old);
 }
 
-/// Where an old output goes while it is replaced or reused.
+/// Where an old output goes while it is replaced.
 #[cfg(unix)]
 fn old_name(path: &Path) -> std::path::PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
@@ -253,18 +253,6 @@ fn unlink_in_background(old: &Path) {
 
 #[cfg(not(unix))]
 pub fn remove_old_output_in_background(_path: &Path) {}
-
-/// The process's umask, from `/proc` (reading it with `umask(2)` would change it).
-#[cfg(target_os = "linux")]
-fn umask() -> u32 {
-    std::fs::read_to_string("/proc/self/status")
-        .ok()
-        .and_then(|s| {
-            let v = s.lines().find_map(|l| l.strip_prefix("Umask:"))?;
-            u32::from_str_radix(v.trim(), 8).ok()
-        })
-        .unwrap_or(0o022)
-}
 
 /// Memory-mapped temp file renamed over the destination when complete. Never writes into an
 /// existing output: it may be a hard link into Rune's store or a running program.
@@ -316,69 +304,6 @@ impl OutputFile {
             file: Some(file),
             ptr: std::ptr::null_mut(),
             len: 0,
-            buffer: None,
-        })
-    }
-
-    /// A memory-mapped executable that overwrites the existing one when that is safe, as mold
-    /// and wild do: writing into a file's existing pages is far cheaper than having a new file
-    /// allocate fresh ones. Safe means a regular file of ours with no other links (so not one
-    /// in Rune's store) that isn't running (`ETXTBSY`); it is moved aside first, so the output
-    /// path never shows a half-written image. (Shared libraries always get a new file: a
-    /// running process may have the old one mapped.)
-    #[cfg(target_os = "linux")]
-    pub fn create_reusing(path: &Path, len: usize, mode: u32) -> io::Result<OutputFile> {
-        match Self::reuse(path, len, mode) {
-            Some(out) => Ok(out),
-            None => Self::create_with_mode(path, len, mode),
-        }
-    }
-
-    #[cfg(target_os = "linux")]
-    fn reuse(path: &Path, len: usize, mode: u32) -> Option<OutputFile> {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let meta = std::fs::symlink_metadata(path).ok()?;
-        // SAFETY: geteuid has no preconditions.
-        let ours = meta.uid() == unsafe { libc::geteuid() };
-        if !meta.is_file() || meta.nlink() != 1 || !ours || meta.len() < (1 << 20) || len == 0 {
-            return None;
-        }
-        let old = old_name(path);
-        std::fs::rename(path, &old).ok()?;
-        // This late the process is large: a thread unlinks, not a forked child.
-        let fail = |old: &Path| {
-            let old = old.to_path_buf();
-            std::thread::spawn(move || std::fs::remove_file(old));
-            None
-        };
-        let Ok(file) = std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&old)
-        else {
-            // Running, or read-only: the output becomes a new file.
-            return fail(&old);
-        };
-        let perm = mode & !umask();
-        if meta.mode() & 0o7777 != perm
-            && file
-                .set_permissions(std::fs::Permissions::from_mode(perm))
-                .is_err()
-        {
-            return fail(&old);
-        }
-        if file.set_len(len as u64).is_err() {
-            return fail(&old);
-        }
-        let Ok(ptr) = map_rw(&file, len) else {
-            return fail(&old);
-        };
-        Some(OutputFile {
-            path: path.to_path_buf(),
-            tmp: old,
-            file: Some(file),
-            ptr,
-            len,
             buffer: None,
         })
     }

@@ -286,6 +286,45 @@ int main(void) {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// hyprlnk writes executables into the file it replaces, when it can: no byte of the old one
+/// may survive. Padding, the terminator of `.interp`, unused GOT slots are all zeros in a new
+/// file; a reused one has the old program's bytes there (an `.interp` without its terminator
+/// stopped the dynamic loader).
+#[test]
+fn an_executable_written_over_another_has_none_of_its_bytes() {
+    if !has_tool("cc") {
+        return;
+    }
+    let dir = scratch("overwrite");
+    std::fs::write(
+        dir.join("hello.c"),
+        "#include <stdio.h>\nint main(void) { puts(\"hello\"); return 0; }\n",
+    )
+    .unwrap();
+    let link = |out: &str| {
+        ok(Command::new("cc")
+            .current_dir(&dir)
+            .arg(format!("-B{}", ld_dir(&dir).display()))
+            .args(["-fPIE", "-pie", "-g", "hello.c", "-o", out]));
+    };
+    link("fresh");
+    // An old executable, big enough to be written over rather than replaced.
+    std::fs::write(dir.join("reused"), vec![0xffu8; 4 << 20]).unwrap();
+    std::fs::set_permissions(
+        dir.join("reused"),
+        std::os::unix::fs::PermissionsExt::from_mode(0o755),
+    )
+    .unwrap();
+    link("reused");
+    let fresh = std::fs::read(dir.join("fresh")).unwrap();
+    let reused = std::fs::read(dir.join("reused")).unwrap();
+    assert_eq!(fresh.len(), reused.len());
+    let first = fresh.iter().zip(&reused).position(|(a, b)| a != b);
+    assert_eq!(first, None, "the outputs differ first at byte {first:?}");
+    assert_eq!(run(&dir, "reused", &[]), "hello\n");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 #[test]
 fn a_cdylib_and_a_program_that_imports_from_it() {
     let dir = scratch("cdylib");
@@ -745,14 +784,15 @@ fn ld_flavor_options_are_honored() {
 }
 
 #[test]
-fn outputs_are_written_in_place_only_when_that_is_safe() {
+fn relinking_leaves_other_links_and_running_programs_alone() {
     use std::io::Write;
     use std::os::unix::fs::MetadataExt;
     if !has_tool("cc") {
         return;
     }
-    let dir = scratch("reuse");
-    // Over a megabyte, so the old output is worth reusing; reads a line, then prints its data.
+    let dir = scratch("relink");
+    // Over a megabyte, so the old output is removed in the background; reads a line, then prints
+    // its data.
     std::fs::write(
         dir.join("big.c"),
         "#include <stdio.h>\nstatic char big[2 << 20] = {VALUE};\n\
@@ -771,10 +811,23 @@ fn outputs_are_written_in_place_only_when_that_is_safe() {
         String::from_utf8(c.wait_with_output().unwrap().stdout).unwrap()
     };
     link("1");
-    let first = ino("big");
     link("2");
-    assert_eq!(ino("big"), first, "an executable is relinked in place");
     assert_eq!(feed("big"), "2\n");
+    let leftovers: Vec<_> = std::fs::read_dir(&dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_name().to_string_lossy().contains(".hyprlnk-"))
+        .collect();
+    assert!(
+        leftovers.is_empty() || {
+            // The old file is unlinked by a child process; give it a moment.
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            std::fs::read_dir(&dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .all(|e| !e.file_name().to_string_lossy().contains(".hyprlnk-"))
+        }
+    );
 
     // A second link to it (Rune's store) is never written into.
     std::fs::hard_link(dir.join("big"), dir.join("kept")).unwrap();
