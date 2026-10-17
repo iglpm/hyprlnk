@@ -4,10 +4,12 @@ on:
   push:
     branches: [main, master]
   pull_request:
+    branches: [main, master]
   workflow_dispatch:
 
-permissions:
-  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -18,14 +20,27 @@ env:
 
 jobs:
   lint:
-    name: Lint (${{ matrix.os }})
+    name: Lint (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-2022]
+        include:
+          - name: linux
+            os: [self-hosted, docker-builds]
+          - name: windows-2022
+            os: windows-2022
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Configure Git Credentials for Submodules
+        env:
+          TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
+        run: |
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -49,7 +64,16 @@ jobs:
             arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Configure Git Credentials for Submodules
+        env:
+          TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
+        run: |
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc, aarch64-pc-windows-msvc
@@ -70,14 +94,27 @@ jobs:
     # anywhere); its unit tests run everywhere. On macOS, `tests/macho.rs`
     # links real programs with rustc and clang and runs them; on Linux,
     # `tests/elf.rs` does with rustc, gcc and g++.
-    name: Test (${{ matrix.os }})
+    name: Test (${{ matrix.name }})
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        include:
+          - name: linux
+            os: [self-hosted, docker-builds]
+          - name: macos
+            os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v7
+      - name: Configure Git Credentials for Submodules
+        env:
+          TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
+        run: |
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
@@ -95,9 +132,18 @@ jobs:
     # threads and thread locals and print backtraces, linked by hyprlnk and
     # run under qemu-user.
     name: Test (Linux, other architectures under qemu)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, docker-builds]
     steps:
-      - uses: actions/checkout@v7
+      - name: Configure Git Credentials for Submodules
+        env:
+          TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
+        run: |
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: >-
@@ -113,8 +159,17 @@ jobs:
 
   msrv:
     name: Minimum Rust version
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, docker-builds]
     steps:
-      - uses: actions/checkout@v7
+      - name: Configure Git Credentials for Submodules
+        env:
+          TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
+        run: |
+          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
+
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          token: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@1.89
       - run: cargo check --all-targets
