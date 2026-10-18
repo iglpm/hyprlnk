@@ -1064,7 +1064,6 @@ fn looks_like_cc(args: &[String]) -> bool {
             a.as_str(),
             "-platform_version"
                 | "-syslibroot"
-                | "-isysroot"
                 | "-macos_version_min"
                 | "-macosx_version_min"
                 | "-dylib"
