@@ -446,6 +446,7 @@ fn arity(name: &str) -> Option<usize> {
         | "-force_load"
         | "-load_hidden"
         | "-syslibroot"
+        | "-isysroot"
         | "-install_name"
         | "-dylib_install_name"
         | "-current_version"
@@ -739,7 +740,7 @@ impl Config {
                 self.set_min(PLATFORM_MACCATALYST, v[0])?
             }
             "-sdk_version" => self.sdk_version = parse_version(v[0]).unwrap_or(0),
-            "-syslibroot" => self.syslibroots.push(PathBuf::from(v[0])),
+            "-syslibroot" | "-isysroot" => self.syslibroots.push(PathBuf::from(v[0])),
             "-L" => self.lib_paths.push(PathBuf::from(v[0])),
             "-F" => self.framework_paths.push(PathBuf::from(v[0])),
             "-Z" => self.no_default_paths = true,
@@ -1063,6 +1064,7 @@ fn looks_like_cc(args: &[String]) -> bool {
             a.as_str(),
             "-platform_version"
                 | "-syslibroot"
+                | "-isysroot"
                 | "-macos_version_min"
                 | "-macosx_version_min"
                 | "-dylib"
