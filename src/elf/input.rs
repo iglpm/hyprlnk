@@ -54,13 +54,7 @@ struct Pending {
 pub fn load<'a>(cfg: &Config, arena: &'a Arena) -> Result<Loaded<'a>> {
     let mut search: Vec<PathBuf> = cfg.lib_paths.clone();
     if let Some(ref root) = cfg.sysroot {
-        for sub in [
-            "usr/lib",
-            "lib",
-            "usr/lib64",
-            "lib64",
-            "usr/local/lib",
-        ] {
+        for sub in ["usr/lib", "lib", "usr/lib64", "lib64", "usr/local/lib"] {
             let p = root.join(sub);
             if p.is_dir() && !search.contains(&p) {
                 search.push(p);
@@ -91,8 +85,9 @@ pub fn load<'a>(cfg: &Config, arena: &'a Arena) -> Result<Loaded<'a>> {
                 .or_else(|| find_file_in_dirs(&search, "Scrt1.o"))
                 .or_else(|| find_file_in_dirs(&search, "crt1.o"));
             let crti = find_file_in_dirs(&search, "crti.o");
-            let crtbegin = find_file_in_dirs(&search, if cfg.pie { "crtbeginS.o" } else { "crtbegin.o" })
-                .or_else(|| find_file_in_dirs(&search, "crtbegin.o"));
+            let crtbegin =
+                find_file_in_dirs(&search, if cfg.pie { "crtbeginS.o" } else { "crtbegin.o" })
+                    .or_else(|| find_file_in_dirs(&search, "crtbegin.o"));
             let crtend = find_file_in_dirs(&search, if cfg.pie { "crtendS.o" } else { "crtend.o" })
                 .or_else(|| find_file_in_dirs(&search, "crtend.o"));
             let crtn = find_file_in_dirs(&search, "crtn.o");
@@ -105,13 +100,23 @@ pub fn load<'a>(cfg: &Config, arena: &'a Arena) -> Result<Loaded<'a>> {
             };
 
             let mut head = Vec::new();
-            if let Some(p) = crt1 { head.push(make_pending(p)); }
-            if let Some(p) = crti { head.push(make_pending(p)); }
-            if let Some(p) = crtbegin { head.push(make_pending(p)); }
+            if let Some(p) = crt1 {
+                head.push(make_pending(p));
+            }
+            if let Some(p) = crti {
+                head.push(make_pending(p));
+            }
+            if let Some(p) = crtbegin {
+                head.push(make_pending(p));
+            }
 
             let mut tail = Vec::new();
-            if let Some(p) = crtend { tail.push(make_pending(p)); }
-            if let Some(p) = crtn { tail.push(make_pending(p)); }
+            if let Some(p) = crtend {
+                tail.push(make_pending(p));
+            }
+            if let Some(p) = crtn {
+                tail.push(make_pending(p));
+            }
 
             if !head.is_empty() {
                 head.extend(pending);
