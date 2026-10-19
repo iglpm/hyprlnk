@@ -7,6 +7,22 @@ use super::arch::Machine;
 pub fn search_paths(lib_paths: &[PathBuf], machine: Machine) -> Vec<PathBuf> {
     let mut out = vec![PathBuf::new()];
     out.extend(lib_paths.iter().cloned());
+    if let Ok(sdk) = std::env::var("HYPRCROSS_SDK_PATH") {
+        let p = PathBuf::from(sdk);
+        let arch = machine.lib_dir();
+        for sub in [
+            p.join("lib").join(arch),
+            p.join("lib"),
+            p.join("ucrt").join(arch),
+            p.join("um").join(arch),
+            p.join("ucrt"),
+            p.join("um"),
+        ] {
+            if sub.is_dir() && !out.contains(&sub) {
+                out.push(sub);
+            }
+        }
+    }
     match std::env::var_os("LIB") {
         Some(lib) if !lib.is_empty() => out.extend(std::env::split_paths(&lib)),
         _ => out.extend(installed_lib_dirs(machine)),

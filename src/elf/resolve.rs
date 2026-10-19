@@ -941,7 +941,11 @@ impl<'a, T: Target> Ctx<'a, T> {
             && !self.cfg.no_dynamic_linker
             && !(self.cfg.static_ && self.dsos.is_empty())
         {
-            self.interp = self.cfg.dynamic_linker.clone();
+            self.interp = self
+                .cfg
+                .dynamic_linker
+                .clone()
+                .or_else(|| Some(T::M.default_dynamic_linker().to_string()));
         }
         let shared = self.cfg.shared;
         let has_dynamic = self.has_dynamic;

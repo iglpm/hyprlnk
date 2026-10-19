@@ -92,6 +92,22 @@ impl Machine {
             _ => return None,
         })
     }
+
+    /// The standard dynamic linker path (PT_INTERP) on Linux.
+    pub fn default_dynamic_linker(self) -> &'static str {
+        match self {
+            Machine::X86_64 => "/lib64/ld-linux-x86-64.so.2",
+            Machine::I386 => "/lib/ld-linux.so.2",
+            Machine::AArch64 => "/lib/ld-linux-aarch64.so.1",
+            Machine::Arm => "/lib/ld-linux-armhf.so.3",
+            Machine::RiscV64 => "/lib/ld-linux-riscv64-lp64d.so.1",
+            Machine::RiscV32 => "/lib/ld-linux-riscv32-ilp32d.so.1",
+            Machine::Ppc64le => "/lib64/ld64.so.2",
+            Machine::Ppc64 => "/lib64/ld64.so.2",
+            Machine::S390x => "/lib64/ld64.so.1",
+            Machine::LoongArch64 => "/lib64/ld-linux-loongarch-lp64d.so.1",
+        }
+    }
 }
 
 /// A relocation decoded from REL or RELA. For REL inputs `addend` is filled in from the

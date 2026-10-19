@@ -233,9 +233,9 @@ fn flavor_from_args(args: &[String]) -> Flavor {
 
 fn parse_flavor(name: &str) -> diag::Result<Flavor> {
     Ok(match name {
-        "link" | "lld-link" | "coff" => Flavor::Coff,
-        "gnu" | "ld" | "ld.lld" | "elf" => Flavor::Gnu,
-        "darwin" | "ld64" | "ld64.lld" | "macho" => Flavor::Darwin,
+        "link" | "lld-link" | "coff" | "msvc" => Flavor::Coff,
+        "gnu" | "ld" | "ld.lld" | "gnu-lld" | "elf" => Flavor::Gnu,
+        "darwin" | "ld64" | "ld64.lld" | "darwin-lld" | "macho" => Flavor::Darwin,
         other => bail!("unknown flavor '{other}' (expected link, gnu or darwin)"),
     })
 }
@@ -249,7 +249,7 @@ fn flavor_from_program_name(argv0: &str) -> Option<Flavor> {
     let stem = stem.strip_suffix(".exe").unwrap_or(&stem);
     if stem.starts_with("ld64") {
         Some(Flavor::Darwin)
-    } else if stem.starts_with("ld.") {
+    } else if stem.starts_with("ld.") || stem == "gnu-lld" {
         Some(Flavor::Gnu)
     } else if stem == "ld" || stem.ends_with("-ld") {
         // What rustc and clang run on Apple platforms as "ld": ld64's command line there.

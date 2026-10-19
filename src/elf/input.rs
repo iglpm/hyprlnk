@@ -53,11 +53,73 @@ struct Pending {
 
 pub fn load<'a>(cfg: &Config, arena: &'a Arena) -> Result<Loaded<'a>> {
     let mut search: Vec<PathBuf> = cfg.lib_paths.clone();
-    let pending: Vec<Pending> = cfg
+    if let Some(ref root) = cfg.sysroot {
+        for sub in [
+            "usr/lib",
+            "lib",
+            "usr/lib64",
+            "lib64",
+            "usr/local/lib",
+        ] {
+            let p = root.join(sub);
+            if p.is_dir() && !search.contains(&p) {
+                search.push(p);
+            }
+        }
+        if let Ok(entries) = std::fs::read_dir(root.join("usr/lib")) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() && !search.contains(&p) {
+                    search.push(p);
+                }
+            }
+        }
+    }
+    let mut pending: Vec<Pending> = cfg
         .inputs
         .iter()
         .map(|i| resolve_input(cfg, i, &search))
         .collect::<Result<_>>()?;
+
+    if !cfg.shared && cfg.sysroot.is_some() {
+        let has_crt1 = pending.iter().any(|p| {
+            let s = p.path.to_string_lossy();
+            s.ends_with("Scrt1.o") || s.ends_with("crt1.o")
+        });
+        if !has_crt1 {
+            let crt1 = find_file_in_dirs(&search, if cfg.pie { "Scrt1.o" } else { "crt1.o" })
+                .or_else(|| find_file_in_dirs(&search, "Scrt1.o"))
+                .or_else(|| find_file_in_dirs(&search, "crt1.o"));
+            let crti = find_file_in_dirs(&search, "crti.o");
+            let crtbegin = find_file_in_dirs(&search, if cfg.pie { "crtbeginS.o" } else { "crtbegin.o" })
+                .or_else(|| find_file_in_dirs(&search, "crtbegin.o"));
+            let crtend = find_file_in_dirs(&search, if cfg.pie { "crtendS.o" } else { "crtend.o" })
+                .or_else(|| find_file_in_dirs(&search, "crtend.o"));
+            let crtn = find_file_in_dirs(&search, "crtn.o");
+
+            let make_pending = |p: PathBuf| Pending {
+                display: p.display().to_string(),
+                path: p,
+                flags: InputFlags::default(),
+                from_script: None,
+            };
+
+            let mut head = Vec::new();
+            if let Some(p) = crt1 { head.push(make_pending(p)); }
+            if let Some(p) = crti { head.push(make_pending(p)); }
+            if let Some(p) = crtbegin { head.push(make_pending(p)); }
+
+            let mut tail = Vec::new();
+            if let Some(p) = crtend { tail.push(make_pending(p)); }
+            if let Some(p) = crtn { tail.push(make_pending(p)); }
+
+            if !head.is_empty() {
+                head.extend(pending);
+                head.extend(tail);
+                pending = head;
+            }
+        }
+    }
     let mut out = Loaded {
         files: Vec::with_capacity(pending.len() * 4),
         machine: None,
@@ -120,6 +182,16 @@ pub fn find_library(
         }
     }
     bail!("unable to find library -l{name}");
+}
+
+fn find_file_in_dirs(dirs: &[PathBuf], name: &str) -> Option<PathBuf> {
+    for dir in dirs {
+        let p = dir.join(name);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    None
 }
 
 fn identity(meta: &std::fs::Metadata, path: &Path) -> (u64, u64) {
