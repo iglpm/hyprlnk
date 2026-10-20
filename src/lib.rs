@@ -33,11 +33,14 @@ pub enum Flavor {
 }
 
 /// The `-C linker-flavor` rustc needs to call hyprlnk with this target's native command line,
-/// if not the default one (Apple targets would get `cc` arguments otherwise).
+/// if not the default one (Apple targets would get `cc` arguments otherwise, and ELF targets on
+/// non-Linux hosts like macOS or Windows need ld.lld flavor).
 pub fn rustc_linker_flavor(triple: &str) -> Option<&'static str> {
     if triple.contains("-apple-") {
         Some("ld64.lld")
-    } else if cfg!(not(unix)) && (linux_target(triple) || triple.contains("-freebsd")) {
+    } else if (cfg!(target_os = "macos") || cfg!(not(unix)))
+        && (linux_target(triple) || triple.contains("-freebsd"))
+    {
         Some("ld.lld")
     } else {
         None
@@ -344,9 +347,9 @@ mod tests {
             "loongarch64-unknown-linux-musl",
         ] {
             assert!(supports_target(t), "{t}");
-            #[cfg(unix)]
+            #[cfg(all(unix, not(target_os = "macos")))]
             assert_eq!(rustc_linker_flavor(t), None, "{t}");
-            #[cfg(not(unix))]
+            #[cfg(any(not(unix), target_os = "macos"))]
             assert_eq!(rustc_linker_flavor(t), Some("ld.lld"), "{t}");
         }
         for t in [
