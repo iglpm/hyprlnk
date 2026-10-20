@@ -35,7 +35,13 @@ pub enum Flavor {
 /// The `-C linker-flavor` rustc needs to call hyprlnk with this target's native command line,
 /// if not the default one (Apple targets would get `cc` arguments otherwise).
 pub fn rustc_linker_flavor(triple: &str) -> Option<&'static str> {
-    triple.contains("-apple-").then_some("ld64.lld")
+    if triple.contains("-apple-") {
+        Some("ld64.lld")
+    } else if cfg!(not(unix)) && (linux_target(triple) || triple.contains("-freebsd")) {
+        Some("ld.lld")
+    } else {
+        None
+    }
 }
 
 pub fn supports_target(triple: &str) -> bool {
@@ -338,7 +344,10 @@ mod tests {
             "loongarch64-unknown-linux-musl",
         ] {
             assert!(supports_target(t), "{t}");
+            #[cfg(unix)]
             assert_eq!(rustc_linker_flavor(t), None, "{t}");
+            #[cfg(not(unix))]
+            assert_eq!(rustc_linker_flavor(t), Some("ld.lld"), "{t}");
         }
         for t in [
             "powerpc64-unknown-linux-gnu",

@@ -186,6 +186,15 @@ pub fn find_library(
             return Ok(p);
         }
     }
+    if !link_static && !cfg.static_ {
+        let so1 = format!("lib{name}.so.1");
+        for dir in search {
+            let p = dir.join(&so1);
+            if p.is_file() {
+                return Ok(p);
+            }
+        }
+    }
     bail!("unable to find library -l{name}");
 }
 
@@ -375,6 +384,35 @@ fn script_path(cfg: &Config, name: &str, script_dir: &Path, search: &[PathBuf]) 
             }
         }
     }
+
+    // Fallback: If `p` cannot be found as written (e.g. it contains a Debian/Ubuntu multiarch
+    // prefix like `x86_64-linux-gnu/libm.so.6` or a relative path from another directory layout),
+    // search by file name in script_dir, search paths, and standard sysroot library directories.
+    if let Some(file_name) = p.file_name() {
+        let r = script_dir.join(file_name);
+        if r.is_file() {
+            return Ok(r);
+        }
+        for d in search {
+            let r = d.join(file_name);
+            if r.is_file() {
+                return Ok(r);
+            }
+        }
+        if let Some(root) = &cfg.sysroot {
+            for sub in &["usr/lib", "usr/lib64", "lib", "lib64", ""] {
+                let r = if sub.is_empty() {
+                    root.join(file_name)
+                } else {
+                    root.join(sub).join(file_name)
+                };
+                if r.is_file() {
+                    return Ok(r);
+                }
+            }
+        }
+    }
+
     bail!("cannot find {name}, named in a linker script")
 }
 
