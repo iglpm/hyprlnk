@@ -13,6 +13,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  GIT_TERMINAL_PROMPT: 0
   GIT_AUTHOR_NAME: "runified"
   GIT_AUTHOR_EMAIL: "runified@runepm.com"
   GIT_COMMITTER_NAME: "runified"
@@ -31,16 +32,7 @@ jobs:
             os: windows-2022
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Configure Git Credentials for Submodules
-        env:
-          TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
-        run: |
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
-
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
@@ -64,16 +56,7 @@ jobs:
             arch: arm64
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Configure Git Credentials for Submodules
-        env:
-          TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
-        run: |
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
-
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-pc-windows-msvc, i686-pc-windows-msvc, aarch64-pc-windows-msvc
@@ -105,18 +88,11 @@ jobs:
             os: macos-latest
     runs-on: ${{ matrix.os }}
     steps:
-      - name: Configure Git Credentials for Submodules
-        env:
-          TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
-        run: |
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
-
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Ensure cargo bin is in PATH
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - run: cargo test
       - name: Link a release build of hyprlnk with itself
         if: runner.os == 'Linux'
@@ -134,16 +110,7 @@ jobs:
     name: Test (Linux, other architectures under qemu)
     runs-on: [self-hosted, docker-builds]
     steps:
-      - name: Configure Git Credentials for Submodules
-        env:
-          TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
-        run: |
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
-
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: >-
@@ -152,6 +119,8 @@ jobs:
             riscv64gc-unknown-linux-musl, powerpc64le-unknown-linux-musl,
             loongarch64-unknown-linux-musl, x86_64-unknown-linux-musl
       - uses: Swatinem/rust-cache@v2
+      - name: Ensure cargo bin is in PATH
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - run: sudo apt-get update && sudo apt-get install -y qemu-user-static
       - run: cargo test --test elf other_architectures_run_under_qemu -- --nocapture
         env:
@@ -161,15 +130,9 @@ jobs:
     name: Minimum Rust version
     runs-on: [self-hosted, docker-builds]
     steps:
-      - name: Configure Git Credentials for Submodules
-        env:
-          TOKEN: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
-        run: |
-          git config --global url."https://x-access-token:${TOKEN}@github.com/".insteadOf "https://github.com/"
-
       - uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          token: ${{ secrets.RUNIFIED_TOKEN || secrets.HYPRLNK_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - name: Ensure cargo bin is in PATH
+        run: echo "$HOME/.cargo/bin" >> $GITHUB_PATH
       - run: cargo check --all-targets

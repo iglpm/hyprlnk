@@ -44,10 +44,36 @@ fn fails(cmd: &mut Command) -> String {
     String::from_utf8_lossy(&out.stderr).into_owned()
 }
 
+fn rustc_path() -> PathBuf {
+    static RUSTC_PATH: OnceLock<PathBuf> = OnceLock::new();
+    RUSTC_PATH
+        .get_or_init(|| {
+            if let Ok(r) = std::env::var("RUSTC")
+                && !r.trim().is_empty()
+            {
+                return PathBuf::from(r.trim());
+            }
+            if let Ok(home) = std::env::var("HOME") {
+                let cargo_rustc = PathBuf::from(home).join(".cargo/bin/rustc");
+                if cargo_rustc.is_file() {
+                    return cargo_rustc;
+                }
+            }
+            if let Ok(cargo_home) = std::env::var("CARGO_HOME") {
+                let cargo_rustc = PathBuf::from(cargo_home).join("bin/rustc");
+                if cargo_rustc.is_file() {
+                    return cargo_rustc;
+                }
+            }
+            PathBuf::from("rustc")
+        })
+        .clone()
+}
+
 fn host() -> &'static str {
     static HOST: OnceLock<String> = OnceLock::new();
     HOST.get_or_init(|| {
-        let out = Command::new("rustc").arg("-vV").output().unwrap();
+        let out = Command::new(rustc_path()).arg("-vV").output().unwrap();
         String::from_utf8_lossy(&out.stdout)
             .lines()
             .find_map(|l| l.strip_prefix("host: "))
@@ -58,7 +84,7 @@ fn host() -> &'static str {
 
 /// rustc linking through `cc -B<hyprlnk as ld>`.
 fn rustc_cmd(dir: &Path) -> Command {
-    let mut c = Command::new(std::env::var("RUSTC").unwrap_or_else(|_| "rustc".into()));
+    let mut c = Command::new(rustc_path());
     c.current_dir(dir)
         .arg(format!("-Clink-arg=-B{}", ld_dir(dir).display()));
     if host() == "x86_64-unknown-linux-gnu" {
@@ -89,7 +115,7 @@ fn has_tool(tool: &str) -> bool {
 fn has_target(target: &str) -> bool {
     static SYSROOT: OnceLock<String> = OnceLock::new();
     let sysroot = SYSROOT.get_or_init(|| {
-        let out = Command::new("rustc")
+        let out = Command::new(rustc_path())
             .args(["--print", "sysroot"])
             .output()
             .unwrap();
@@ -187,7 +213,7 @@ fn cc_style_command_lines_work_without_a_flavor() {
     // rustc's default command line for a linker named `hyprlnk`: `cc`'s.
     let dir = scratch("cc");
     std::fs::write(dir.join("stress.rs"), STRESS).unwrap();
-    ok(Command::new("rustc")
+    ok(Command::new(rustc_path())
         .current_dir(&dir)
         .args(["stress.rs", "-g", "-o", "cc"])
         .arg(format!("-Clinker={HYPRLNK}")));
