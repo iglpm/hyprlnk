@@ -86,7 +86,7 @@ jobs:
             shasum -a 256 "$name.zip" > "$name.zip.sha256"
           fi
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.target }}
           path: hyprlnk-*.zip*
