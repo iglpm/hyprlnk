@@ -1,5 +1,5 @@
 //! End-to-end on Linux: rustc, cc and c++ link with hyprlnk, then the result runs. hyprlnk
-//! is found as `ld` through `-B` (as Rune does it), or run directly with `ld` command lines.
+//! is found as `ld` through `-B` (as Igel does it), or run directly with `ld` command lines.
 //! Parts skip when a target, compiler or emulator is missing.
 #![cfg(target_os = "linux")]
 
@@ -143,7 +143,7 @@ fn linked_by_hyprlnk(file: &Path) {
 }
 
 const STRESS: &str = r#"
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 static DROPS: AtomicUsize = AtomicUsize::new(0);
@@ -154,6 +154,7 @@ impl Drop for Guard {
 thread_local! {
     static TLS: RefCell<Vec<u64>> = RefCell::new(Vec::new());
     static G: Guard = Guard(10);
+    static INITIALIZED: Cell<u32> = const { Cell::new(7) };
 }
 #[inline(never)]
 fn deep(n: u32) -> u32 {
@@ -162,11 +163,13 @@ fn deep(n: u32) -> u32 {
     deep(n - 1) + 1
 }
 fn main() {
+    assert_eq!(INITIALIZED.with(Cell::get), 7);
     std::panic::set_hook(Box::new(|_| {}));
     assert!(std::panic::catch_unwind(|| deep(30)).is_err());
     assert_eq!(DROPS.load(Ordering::SeqCst), 31);
     let sums: Vec<u64> = (0..6)
         .map(|i| std::thread::spawn(move || {
+            assert_eq!(INITIALIZED.with(Cell::get), 7);
             G.with(|g| assert_eq!(g.0, 10));
             TLS.with(|t| t.borrow_mut().extend(0..i));
             TLS.with(|t| t.borrow().iter().sum())
@@ -855,7 +858,7 @@ fn relinking_leaves_other_links_and_running_programs_alone() {
         }
     );
 
-    // A second link to it (Rune's store) is never written into.
+    // A second link to it (Igel's store) is never written into.
     std::fs::hard_link(dir.join("big"), dir.join("kept")).unwrap();
     link("3");
     assert_ne!(ino("big"), ino("kept"));

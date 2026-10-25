@@ -982,7 +982,15 @@ impl<'a, T: Target> Ctx<'a, T> {
         let mut tls_lo = u64::MAX;
         let mut tls_hi = 0u64;
         let mut tls_file_hi = 0u64;
-        let mut tls_align = 1u64;
+        // The start of the TLS image must satisfy every TLS section's alignment.
+        // Otherwise a more-aligned .tbss shifts libc's TLS image relative to the
+        // TP offsets we write (observable with initialized ARM musl thread locals).
+        let tls_align = outs
+            .iter()
+            .filter(|o| o.is_alloc() && o.shndx != 0 && o.flags & SHF_TLS != 0)
+            .map(|o| o.align)
+            .max()
+            .unwrap_or(1);
         for o in outs.iter_mut() {
             if !o.is_alloc() || o.shndx == 0 {
                 continue;
@@ -996,6 +1004,11 @@ impl<'a, T: Target> Ctx<'a, T> {
                 va = align_up(va, page) + off % page;
             }
             cur_class = Some(class);
+            if o.flags & SHF_TLS != 0 && tls_lo == u64::MAX {
+                let aligned = align_up(va, tls_align);
+                off += aligned - va;
+                va = aligned;
+            }
             let tls_bss = o.flags & SHF_TLS != 0 && o.nobits();
             if tls_bss {
                 // `.tbss` has room in the TLS block only, not in its segment: it gets its
@@ -1008,7 +1021,6 @@ impl<'a, T: Target> Ctx<'a, T> {
                 o.offset = off;
                 tls_lo = tls_lo.min(addr);
                 tls_hi = tls_hi.max(addr + o.size);
-                tls_align = tls_align.max(o.align);
                 continue;
             }
             if o.align > page {
@@ -1031,7 +1043,6 @@ impl<'a, T: Target> Ctx<'a, T> {
                 if !o.nobits() {
                     tls_file_hi = tls_file_hi.max(va + o.size);
                 }
-                tls_align = tls_align.max(o.align);
             }
             if tls_bss {
                 continue;
