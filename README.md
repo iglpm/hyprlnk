@@ -6,10 +6,10 @@
 
 A drop-in replacement for Microsoft's `link.exe` and `lld-link` on Windows (x64, ARM64, x86 with full PDB support), for Apple's `ld` and `ld64.lld` on macOS (arm64, arm64e, x86_64 with code-signing and debug maps) — running roughly **twice as fast** as the fastest alternatives — and for GNU `ld`, `ld.lld`, and `mold` on Linux.
 
-Integrated directly into [Rune](https://runepm.com), and fully usable as a standalone tool by any Rust, C, or C++ project.
+Integrated directly into [Igel](https://runepm.com), and fully usable as a standalone tool by any Rust, C, or C++ project.
 
 ```sh
-rune build                                                 # Rune links with hyprlnk by default
+igl build                                                 # Igel links with hyprlnk by default
 rustc -C linker=hyprlnk main.rs                            # Any toolchain that invokes a linker
 clang -fuse-ld=/path/to/ld64.hyprlnk main.c                # C, C++, Objective-C on macOS
 gcc -B/path/to/dir-with-hyprlnk-as-ld main.c               # C and C++ on Linux
@@ -25,7 +25,7 @@ hyprlnk is built from the ground up to make that wait as brief as physically pos
 
 ### Real-World Benchmarks
 
-**macOS (Apple Silicon M5)** — Linking Rune (dev profile: 460 inputs, 609 MB input data, 90 MB output binary):
+**macOS (Apple Silicon M5)** — Linking Igel (dev profile: 460 inputs, 609 MB input data, 90 MB output binary):
 
 | Linker | Median Wall Time | Relative Speed |
 | :--- | :---: | :---: |
@@ -33,7 +33,7 @@ hyprlnk is built from the ground up to make that wait as brief as physically pos
 | Apple `ld` (ld-prime) | 172 ms | 2.3× slower |
 | ld64.lld 23 | 310 ms | 4.1× slower |
 
-**Windows (Intel Core i5-10400F)** — Linking Rune (dev profile: 2,337 object files, 715 MB input data):
+**Windows (Intel Core i5-10400F)** — Linking Igel (dev profile: 2,337 object files, 715 MB input data):
 
 | Scenario | hyprlnk | lld-link 22 | Speedup |
 | :--- | :---: | :---: | :---: |
@@ -45,11 +45,11 @@ hyprlnk is built from the ground up to make that wait as brief as physically pos
 
 | Workload | hyprlnk | wild 0.10 | mold 3.0 | lld 23 |
 | :--- | :---: | :---: | :---: | :---: |
-| Rune, dev build (3,640 objects, 600 MB in, 308 MB out) | 258 ms | **255 ms** | 427 ms | 478 ms |
+| Igel, dev build (3,640 objects, 600 MB in, 308 MB out) | 258 ms | **255 ms** | 427 ms | 478 ms |
 | hyprlnk, dev build (716 MB in, 381 MB out) | 267 ms | **253 ms** | 386 ms | 409 ms |
-| Rune without debug info (`-S`) | 138 ms | **100 ms** | 256 ms | 311 ms |
+| Igel without debug info (`-S`) | 138 ms | **100 ms** | 256 ms | 311 ms |
 
-Outputs match `lld` in byte size, guarantee byte-for-byte reproducibility, and pass Rune's complete test suite across all three operating systems. Read our full [Performance Analysis & Methodology](docs/performance.md).
+Outputs match `lld` in byte size, guarantee byte-for-byte reproducibility, and pass Igel's complete test suite across all three operating systems. Read our full [Performance Analysis & Methodology](docs/performance.md).
 
 ## Architectural Innovations: Why hyprlnk Is So Fast
 
@@ -101,9 +101,9 @@ Outputs match `lld` in byte size, guarantee byte-for-byte reproducibility, and p
 
 ## Quickstart & Integration
 
-### With Rune
+### With Igel
 
-Zero setup needed. `rune` embeds hyprlnk and uses it as the default linker on Linux, macOS, and Windows. To fall back to platform default linkers, configure `linker = "default"` in `Rune.toml`.
+Zero setup needed. `igl` embeds hyprlnk and uses it as the default linker on Linux, macOS, and Windows. To fall back to platform default linkers, configure `linker = "default"` in `Igel.toml`.
 
 ### With Cargo
 
@@ -139,13 +139,13 @@ clang -fuse-ld=/usr/local/bin/ld64.hyprlnk main.c -o app
 gcc -B/usr/local/libexec/hyprlnk main.c -o app
 ```
 
-Build the release binary directly with `cargo build --release` (or `rune build --release`). Check our complete [Getting Started Guide](docs/getting-started.md).
+Build the release binary directly with `cargo build --release` (or `igl build --release`). Check our complete [Getting Started Guide](docs/getting-started.md).
 
 ## Documentation
 
 | Guide | Description |
 | :--- | :--- |
-| [Getting Started](docs/getting-started.md) | Setup instructions for Rune, Cargo, rustc, GCC, Clang, and CMake |
+| [Getting Started](docs/getting-started.md) | Setup instructions for Igel, Cargo, rustc, GCC, Clang, and CMake |
 | [Linux ELF Linker](docs/linux.md) | ELF architecture support, dynamic loader tables, and glibc/musl details |
 | [macOS Mach-O Linker](docs/macos.md) | Mach-O binary formats, chained fixups, signing, and Apple Silicon tuning |
 | [Command Line Options](docs/command-line.md) | Complete CLI reference for MSVC, ld64, and GNU ld flag flavors |
@@ -158,7 +158,7 @@ Build the release binary directly with `cargo build --release` (or `rune build -
 
 ## Project Status
 
-hyprlnk links production PE/COFF images on Windows, Mach-O binaries on macOS, and ELF executables and shared libraries on Linux across all primary architectures. It is validated against Rune's entire test suite and production builds.
+hyprlnk links production PE/COFF images on Windows, Mach-O binaries on macOS, and ELF executables and shared libraries on Linux across all primary architectures. It is validated against Igel's entire test suite and production builds.
 
 ## Contributing
 

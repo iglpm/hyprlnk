@@ -7,16 +7,16 @@ writes for a linker it doesn't recognize, so it slots in wherever those run.
 
 ## Using it
 
-### With Rune
+### With Igel
 
 ```toml
 [build]
 linker = "hyprlnk"
 ```
 
-Rune links binaries, tests, build scripts, proc-macros and dynamic libraries
+Igel links binaries, tests, build scripts, proc-macros and dynamic libraries
 for `aarch64-apple-darwin`, `x86_64-apple-darwin` and `arm64e-apple-darwin`
-with the hyprlnk built into `rune`. It tells rustc to pass ld64's command
+with the hyprlnk built into `igl`. It tells rustc to pass ld64's command
 line (`-C linker-flavor=ld64.lld`), so link arguments written for `cc` in
 `.cargo/config.toml` (`-C link-arg=-fuse-ld=lld`, `-Wl,…`) keep working:
 hyprlnk ignores the driver-only ones and unwraps `-Wl,` itself.

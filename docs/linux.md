@@ -10,12 +10,12 @@ recognize.
 
 ## Using it
 
-### With Rune
+### With Igel
 
-Rune links with hyprlnk by default: binaries, tests, build scripts,
+Igel links with hyprlnk by default: binaries, tests, build scripts,
 proc-macros and dynamic libraries, for every `*-unknown-linux-gnu*` and
 `*-unknown-linux-musl*` target on the architectures above. rustc runs the
-`rune` executable as its linker, which runs the target's C compiler (the
+`igl` executable as its linker, which runs the target's C compiler (the
 `target.<triple>.linker` named in `.cargo/config.toml`, else `cc`) with
 hyprlnk as that compiler's `ld`. The C compiler contributes what only it
 knows — the C runtime's start files, libgcc, the system's library
@@ -110,7 +110,7 @@ thunk, and calls through the TOC and stubs ppc64's ABI requires.
 - **Executables are written in place.** If the output exists, is a regular
   file of yours with no other links, and isn't running, hyprlnk overwrites
   it, as mold and wild do: on Linux, reusing a file's pages is much cheaper
-  than allocating new ones. Otherwise — a file hard-linked into Rune's store,
+  than allocating new ones. Otherwise — a file hard-linked into Igel's store,
   a running program, any shared library (a running process may have it
   mapped) — the output is a new file, renamed into place.
 - **Reproducible.** The same inputs give the same output, byte for byte.
@@ -141,5 +141,5 @@ HYPRLNK_REPRODUCE=/tmp/links cargo build       # save each link to replay it
 - `-z pack-relative-relocs` is accepted, but relative relocations are written
   as ordinary `RELA` entries; `--icf` is accepted and ignored.
 - ppc64 ELFv1 (`powerpc64-unknown-linux-gnu`), big-endian AArch64 and ARM,
-  MIPS, SPARC, 32-bit PowerPC and x32. Rune keeps the platform linker for
+  MIPS, SPARC, 32-bit PowerPC and x32. Igel keeps the platform linker for
   those targets, and for Android.

@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes go into the latest release. hyprlnk follows Rune's version
+Security fixes go into the latest release. hyprlnk follows Igel's version
 numbers (`YEAR.MINOR.PATCH`); within a year's line, upgrading is always
 compatible.
 

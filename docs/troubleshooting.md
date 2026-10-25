@@ -17,7 +17,7 @@ directly, pass them yourself (`-L/usr/lib`, or your distribution's
 rustc handed hyprlnk a `cc` command line, and hyprlnk needs a C compiler to
 find the C runtime. Install one, set `HYPRLNK_CC` to it, or have rustc pass
 `ld` arguments (`-C linker-flavor=ld`, enough for musl targets, which bring
-their own C runtime). Under Rune, `target.<triple>.linker` in
+their own C runtime). Under Igel, `target.<triple>.linker` in
 `.cargo/config.toml` names the C compiler for that target.
 
 **`crt1.o is for x86-64, but main.o is for AArch64`** (or another pair)
@@ -153,5 +153,5 @@ HYPRLNK_REPRODUCE=/tmp/repro <build the way that fails>   # or --reproduce=/tmp/
 `hyprlnk @link.rsp` (on macOS `hyprlnk -flavor darwin @link.rsp`, on Linux
 `hyprlnk -flavor gnu @link.rsp`) repeats the link. Zip that directory (check it contains
 nothing private) and attach it to an issue, with the error or the
-difference you see. Under Rune or Cargo the variable reaches every link
+difference you see. Under Igel or Cargo the variable reaches every link
 `rustc` runs.

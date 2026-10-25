@@ -460,7 +460,7 @@ fn forked(f: impl FnOnce() -> Result<()>) -> Result<()> {
 /// Link with an explicit configuration; the machine comes from `-m` or the first input.
 pub fn link(cfg: Config) -> Result<()> {
     // The output is a new file, renamed over the old one. Writing into the old one instead is
-    // only correct with every byte the writers skip zeroed first, which made relinking Rune's
+    // only correct with every byte the writers skip zeroed first, which made relinking Igel's
     // 300 MB debug build 20–100 ms slower than writing a new file (tmpfs, ext4).
     if crate::EXIT_AFTER_LINK.load(std::sync::atomic::Ordering::Relaxed) {
         crate::fileio::remove_old_output_in_background(&cfg.output);

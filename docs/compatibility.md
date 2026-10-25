@@ -63,7 +63,7 @@ Not supported: LLVM bitcode (linker-plugin LTO), MSVC `/GL` objects, CLR
 ### Tested with
 
 Rust 1.98 (`x86_64`, `aarch64`, `i686` `pc-windows-msvc`), clang-cl 22,
-MSVC 14.44 runtime libraries, Windows SDK 10.0.26100. Rune's test suite
+MSVC 14.44 runtime libraries, Windows SDK 10.0.26100. Igel's test suite
 passes with every test binary and build script linked by hyprlnk.
 
 ## macOS
@@ -126,14 +126,14 @@ Not supported: LLVM bitcode (linker-plugin LTO), `-r`, `-static`,
   identical code folding (`-deduplicate`), Objective-C category merging,
   `-bitcode_bundle`, `-sectalign`/`-segprot`, `-why_live`.
 - Outputs are written to a temporary file and renamed, never in place: a
-  running program or a hard link in Rune's store is never modified.
+  running program or a hard link in Igel's store is never modified.
 
 ### Tested with
 
 Rust 1.98 (`aarch64-apple-darwin`, `x86_64-apple-darwin`), Apple clang 21
 (C, C++ with libc++, Objective-C, arm64e), macOS 27 SDK, on an Apple M5.
-Rune's test suite passes with every test binary, build script and proc-macro
-linked by hyprlnk; on Rune's own build, every function's unwind encoding and
+Igel's test suite passes with every test binary, build script and proc-macro
+linked by hyprlnk; on Igel's own build, every function's unwind encoding and
 the whole `__eh_frame` match ld64.lld's; on the x86_64 test programs, every
 function matches lld's instruction for instruction.
 
@@ -212,6 +212,6 @@ Not supported: LLVM bitcode and GCC's LTO objects (linker-plugin LTO), `-r`,
 Rust 1.98 (`x86_64-unknown-linux-gnu` natively; `x86_64`, `i686`, `aarch64`,
 `armv7`, `riscv64gc`, `powerpc64le`, `loongarch64` musl targets and the glibc
 ones with Debian sysroots, under qemu-user), GCC 16 and Clang 23 (C, C++ with
-exceptions and RTTI), glibc 2.44, binutils 2.47 for comparison. Rune's test
+exceptions and RTTI), glibc 2.44, binutils 2.47 for comparison. Igel's test
 suite passes with every test binary, build script and proc-macro linked by
 hyprlnk.

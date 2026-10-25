@@ -140,7 +140,7 @@ Objects can carry options in a `.drectve` section. hyprlnk honors
 | `LIB` | library search directories, after `/LIBPATH` |
 | `VCToolsInstallDir` | the MSVC toolset to use when `LIB` is unset |
 | `HYPRLNK_REPRODUCE` | as `/REPRODUCE` |
-| `RUNE_HYPRLNK` | set by Rune on the compiler: makes the `rune` executable act as hyprlnk |
+| `IGEL_HYPRLNK` | set by Igel on the compiler: makes the `igl` executable act as hyprlnk |
 
 
 ## macOS (ld64 command line)

@@ -8,7 +8,7 @@ If you are new to hyprlnk, start with the [Getting Started Guide](getting-starte
 
 | Guide | Description |
 | :--- | :--- |
-| [Getting Started](getting-started.md) | Installation options and integration guides for Rune, Cargo, rustc, GCC, Clang, CMake, and MSBuild |
+| [Getting Started](getting-started.md) | Installation options and integration guides for Igel, Cargo, rustc, GCC, Clang, CMake, and MSBuild |
 | [Linux ELF Linker](linux.md) | Architecture coverage, runtime integration, glibc/musl support, and current capabilities |
 | [macOS Mach-O Linker](macos.md) | Mach-O outputs, compact unwind info, debug maps, ad-hoc code signing, and Apple Silicon tuning |
 | [Command Line Options](command-line.md) | Comprehensive command line flag reference across MSVC, ld64, and GNU ld syntaxes |

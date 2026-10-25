@@ -6,9 +6,9 @@ Any tool or build system that invokes one of these linkers can run hyprlnk direc
 
 ## Installation
 
-### Built Into Rune (Zero Setup Required)
+### Built Into Igel (Zero Setup Required)
 
-If you use [Rune](https://runepm.com), hyprlnk is already installed and enabled by default for:
+If you use [Igel](https://runepm.com), hyprlnk is already installed and enabled by default for:
 - **Linux**: `*-unknown-linux-gnu*` and `*-unknown-linux-musl*` on x86-64, x86, AArch64, ARM (ARMv5TE and later, including Thumb-2), RISC-V 64, POWER (little-endian), s390x, and LoongArch.
 - **Windows**: `x86_64`, `aarch64`, and `i686` on `*-pc-windows-msvc`.
 - **macOS**: `aarch64`, `arm64e`, and `x86_64` on `*-apple-darwin`.
@@ -16,7 +16,7 @@ If you use [Rune](https://runepm.com), hyprlnk is already installed and enabled 
 To switch back to your platform's default linker at any time:
 
 ```toml
-# In Rune.toml or ~/.rune/config.toml
+# In Igel.toml or ~/.igel/config.toml
 [build]
 linker = "default"
 ```
@@ -24,7 +24,7 @@ linker = "default"
 Or set the environment variable for a single build:
 
 ```sh
-RUNE_BUILD_LINKER=default rune build
+IGEL_BUILD_LINKER=default igl build
 ```
 
 ### Standalone Executable Installation
@@ -33,7 +33,7 @@ hyprlnk is a self-contained Rust crate with zero external dependencies. To build
 
 ```sh
 cd hyprlnk
-cargo build --release    # or: rune build --release
+cargo build --release    # or: igl build --release
 # Executable located at target/release/hyprlnk
 ```
 

@@ -25,7 +25,7 @@ The streams follow the format Microsoft's DIA SDK and `dbghelp` read, and
 `lld-link` writes: same stream layout, same hash functions (`hashStringV1`,
 the CRC-32 type hashes), same hash table growth, same record translations
 (for example `S_GPROC32_ID` becomes `S_GPROC32` with the function's type).
-On Rune's own build the PDB has exactly as many type and id records as
+On Igel's own build the PDB has exactly as many type and id records as
 lld's, and is within 0.2 % of its size.
 
 What hyprlnk checks itself against:
@@ -69,7 +69,7 @@ Run with `/TIME` to see each sub-phase.
 A PDB is tied to its image by a GUID and an age in both. hyprlnk derives the
 GUID from a hash of the PDB's contents, and the image timestamp from a hash
 of the image (which contains the GUID), so the same inputs always give the
-same image and the same PDB — useful for caching (Rune stores linked
+same image and the same PDB — useful for caching (Igel stores linked
 binaries by content) and for reproducible builds.
 
 `/PDBALTPATH:%_PDB%` (which `rustc` passes) records only the PDB's file name

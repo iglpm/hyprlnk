@@ -5,17 +5,17 @@
 ## Linux
 
 Three links, captured with `HYPRLNK_REPRODUCE` and replayed with each linker:
-Rune's own `rune` and hyprlnk's own `hyprlnk` in the dev profile (full debug
-info), and Rune's link again with `-S` (no debug info, like a release build).
+Igel's own `igl` and hyprlnk's own `hyprlnk` in the dev profile (full debug
+info), and Igel's link again with `-S` (no debug info, like a release build).
 Intel Core i5-10400F (6 cores, 12 threads), Linux 7.2, inputs in the file
 cache, outputs on tmpfs; the linkers take turns, 11 rounds after a warm-up,
 wall-clock time including process startup.
 
 | | hyprlnk | wild 0.10 | mold 3.0 | lld 23.1 |
 | --- | ---: | ---: | ---: | ---: |
-| Rune, dev (3,640 objects, 600 MB in, 308 MB out) | 258 ms | **255 ms** | 427 ms | 478 ms |
+| Igel, dev (3,640 objects, 600 MB in, 308 MB out) | 258 ms | **255 ms** | 427 ms | 478 ms |
 | hyprlnk, dev (716 MB in, 381 MB out) | 267 ms | **253 ms** | 386 ms | 409 ms |
-| Rune, `-S` (77 MB out) | 138 ms | **100 ms** | 256 ms | 311 ms |
+| Igel, `-S` (77 MB out) | 138 ms | **100 ms** | 256 ms | 311 ms |
 
 hyprlnk links in 55–70 % of mold's time and 45–65 % of lld's. wild is ahead:
 by 1–5 % with debug info and by a third without it. The outputs are
@@ -28,7 +28,7 @@ writes a whole executable. hyprlnk, like mold and wild, writes an executable
 into the previous one's file when that is safe, which spares the kernel
 allocating fresh pages (see [Linux](linux.md#linking-the-parts-that-matter)).
 
-`--time` for Rune's dev link (`HYPRLNK_PROF=1` adds CPU time and busy cores):
+`--time` for Igel's dev link (`HYPRLNK_PROF=1` adds CPU time and busy cores):
 
 ```text
 hyprlnk:      3.85 ms  open inputs
@@ -60,7 +60,7 @@ hyprlnk:      4.97 ms  commit output
 
 ## macOS
 
-Linking Rune's own `rune` (dev profile): 258 objects and 202 rlibs on the
+Linking Igel's own `igl` (dev profile): 258 objects and 202 rlibs on the
 command line (2,561 objects loaded, 445,000 atoms), libSystem, Security and
 CoreFoundation from the SDK's text stubs, 609 MB of input, a 90 MB
 executable with a 9.8 MB export trie and a 450,000-entry symbol table with
@@ -112,7 +112,7 @@ once the file runs, and kills processes that map them.
 
 ## Windows
 
-Linking Rune's own `rune.exe` (dev profile): 2,337 objects from 221 archives
+Linking Igel's own `igl.exe` (dev profile): 2,337 objects from 221 archives
 (250 crates plus the standard library), 715 MB of input, a 32 MB executable,
 a 189 MB PDB. Intel Core i5-10400F (6 cores, 12 threads), Windows 11, inputs
 in the file cache, best of 7 runs, wall-clock time including process
@@ -142,7 +142,7 @@ On Linux, capture with `HYPRLNK_REPRODUCE` and replay with each linker (the
 saved command line is GNU ld's, which all of them take):
 
 ```sh
-HYPRLNK_REPRODUCE=/tmp/links cargo build      # with hyprlnk as the linker (or under Rune)
+HYPRLNK_REPRODUCE=/tmp/links cargo build      # with hyprlnk as the linker (or under Igel)
 cd /tmp/links/myapp-1234
 hyprlnk -flavor gnu @link.rsp -o h --time
 mold @link.rsp -o m
@@ -161,7 +161,7 @@ ld64.lld @link.rsp -o l
 ```
 
 On Windows, capture a real link with `/REPRODUCE` (or `HYPRLNK_REPRODUCE`, which reaches
-links that `rustc` runs, under Cargo or Rune), then replay it with each
+links that `rustc` runs, under Cargo or Igel), then replay it with each
 linker:
 
 ```powershell

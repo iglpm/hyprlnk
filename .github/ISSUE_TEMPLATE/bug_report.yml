@@ -37,7 +37,7 @@ body:
     id: version
     attributes:
       label: hyprlnk version
-      description: "`hyprlnk --version`, or `rune --version` when using Rune's built-in linker."
+      description: "`hyprlnk --version`, or `igl --version` when using Igel's built-in linker."
       placeholder: hyprlnk 2027.0.0
     validations:
       required: true
@@ -57,7 +57,7 @@ body:
     attributes:
       label: How is hyprlnk run?
       options:
-        - Rune (build.linker = "hyprlnk")
+        - Igel (build.linker = "hyprlnk")
         - Cargo / rustc (-C linker)
         - Directly
         - CMake / MSBuild / another build system

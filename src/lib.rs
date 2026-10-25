@@ -1,4 +1,4 @@
-//! hyprlnk: a fast linker built into Rune. The COFF backend links x64/ARM64/x86 Windows images;
+//! hyprlnk: a fast linker built into Igel. The COFF backend links x64/ARM64/x86 Windows images;
 //! the Mach-O backend links arm64, arm64e and x86_64 macOS images; the ELF backend links Linux
 //! executables and shared libraries for x86-64, x86, AArch64, ARM, RISC-V, POWER, s390x and
 //! LoongArch.
@@ -18,8 +18,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Makes the Rune executable act as this linker (`-C linker=<rune>`).
-pub const EMBEDDED_ENV: &str = "RUNE_HYPRLNK";
+/// Makes the Igel executable act as this linker (`-C linker=<igl>`).
+pub const EMBEDDED_ENV: &str = "IGEL_HYPRLNK";
 
 /// The C compiler hyprlnk runs for a `cc` command line on Linux (default `cc`), to find the C
 /// runtime; hyprlnk is its `ld`.
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn flavor_follows_the_program_name() {
         assert_eq!(flavor_from_program_name("hyprlnk"), None);
-        assert_eq!(flavor_from_program_name(r"C:\x\rune.exe"), None);
+        assert_eq!(flavor_from_program_name(r"C:\x\igl.exe"), None);
         assert_eq!(
             flavor_from_program_name("/usr/bin/ld.hyprlnk"),
             Some(Flavor::Gnu)

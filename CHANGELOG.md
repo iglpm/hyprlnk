@@ -2,7 +2,7 @@
 
 All notable changes to hyprlnk are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions follow
-Rune's (`YEAR.MINOR.PATCH`).
+Igel's (`YEAR.MINOR.PATCH`).
 
 ## [2027.0.0] - Unreleased
 
@@ -26,12 +26,12 @@ The first release.
   and Windows SDK.
 - Reproducible output: content-hash timestamps and PDB GUIDs.
 - `/TIME`, `/VERBOSE`, `/REPRODUCE` (and `HYPRLNK_REPRODUCE`), `/THREADS`.
-- Built into Rune (`build.linker = "hyprlnk"`); usable as a library and as
+- Built into Igel (`build.linker = "hyprlnk"`); usable as a library and as
   the standalone `hyprlnk` executable.
 - A **Mach-O linker for macOS** taking ld64/`ld64.lld` command lines (and
   the `cc`-style ones rustc writes): executables, dylibs and bundles for
   **arm64, arm64e and x86_64**, about twice as fast as Apple's ld-prime and
-  four times as fast as ld64.lld on Rune's own build.
+  four times as fast as ld64.lld on Igel's own build.
   - Inputs: Mach-O objects, rlibs and `.a` archives (BSD and GNU symbol
     tables), dylibs, `.tbd` text stubs v1–v5 with re-exports and `$ld$`
     directives, universal files, `LC_LINKER_OPTION` auto-linking.
@@ -44,13 +44,13 @@ The first release.
     `-sectcreate`, `-map`, `-dependency_info`, `--reproduce`, `--time`.
 - The flavor comes from `-flavor`, the program name (`ld64.*`, `lld-link`)
   or the arguments.
-- Rune passes `-C linker-flavor=ld64.lld` for Apple targets, so the built-in
+- Igel passes `-C linker-flavor=ld64.lld` for Apple targets, so the built-in
   hyprlnk links them too.
 - An **ELF linker for Linux** taking GNU ld/`ld.lld` command lines:
   executables (PIE, `-no-pie`, static, static-pie) and shared objects for
   **x86-64, x86, AArch64, ARM, RISC-V, POWER (ppc64le), s390x and
   LoongArch**, against glibc or musl; 1.5–2.3 times as fast as lld and
-  1.45–1.85 times as fast as mold on Rune's and hyprlnk's own builds.
+  1.45–1.85 times as fast as mold on Igel's and hyprlnk's own builds.
   - Inputs: ELF objects (debug sections may be zlib- or zstd-compressed),
     archives (also thin), shared objects with symbol versions, input linker
     scripts, response files.

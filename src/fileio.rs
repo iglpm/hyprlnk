@@ -206,7 +206,7 @@ pub fn remove_old_output_in_background(path: &Path) {
     let Ok(meta) = std::fs::symlink_metadata(path) else {
         return;
     };
-    // Small files cost nothing to free; hard links (Rune's store) are not ours to unlink.
+    // Small files cost nothing to free; hard links (Igel's store) are not ours to unlink.
     if !meta.is_file() || meta.len() < (4 << 20) || {
         use std::os::unix::fs::MetadataExt;
         meta.nlink() > 1
@@ -255,7 +255,7 @@ fn unlink_in_background(old: &Path) {
 pub fn remove_old_output_in_background(_path: &Path) {}
 
 /// Memory-mapped temp file renamed over the destination when complete. Never writes into an
-/// existing output: it may be a hard link into Rune's store or a running program.
+/// existing output: it may be a hard link into Igel's store or a running program.
 pub struct OutputFile {
     path: std::path::PathBuf,
     tmp: std::path::PathBuf,
@@ -363,7 +363,7 @@ impl OutputFile {
         }
         drop(file);
         if std::fs::rename(&self.tmp, &self.path).is_err() {
-            // On Windows a read-only destination (from Rune's store) must be removed before the rename.
+            // On Windows a read-only destination (from Igel's store) must be removed before the rename.
             if std::fs::remove_file(&self.path).is_ok() {
                 return std::fs::rename(&self.tmp, &self.path);
             }

@@ -24,7 +24,7 @@ body:
         - Input format
         - Debug info (PDB, debug map)
         - New platform (ELF, ...)
-        - Rune integration
+        - Igel integration
         - Performance
         - Other
   - type: textarea

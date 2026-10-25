@@ -1,11 +1,11 @@
 [package]
 name = "hyprlnk"
-description = "The fastest linker for Windows (x64, ARM64, x86) and macOS (arm64, arm64e, x86_64), and a fast one for Linux (x86-64, AArch64, ARM, RISC-V and more): a drop-in for link.exe, lld-link, ld64, GNU ld and lld, built into the Rune build system"
+description = "The fastest linker for Windows (x64, ARM64, x86) and macOS (arm64, arm64e, x86_64), and a fast one for Linux (x86-64, AArch64, ARM, RISC-V and more): a drop-in for link.exe, lld-link, ld64, GNU ld and lld, built into the Igel build system"
 version = "2027.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 rust-version = "1.89"
-repository = "https://github.com/runepm/rune"
+repository = "https://github.com/runepm/igel"
 homepage = "https://runepm.com"
 documentation = "https://docs.rs/hyprlnk"
 readme = "README.md"

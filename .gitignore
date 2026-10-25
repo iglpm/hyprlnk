@@ -1,4 +1,4 @@
 /target/
-/.rune/
+/.igel/
 /Cargo.lock.bak
 *.pdb

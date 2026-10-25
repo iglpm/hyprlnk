@@ -27,14 +27,14 @@ For security vulnerabilities, please refer directly to [SECURITY.md](SECURITY.md
 
 ## Local Development Workflow
 
-hyprlnk is written in standard Rust with zero external build-time dependencies. It can be developed standalone or directly within the [Rune](https://github.com/runepm/rune) monorepo (as a submodule at `hyprlnk/`):
+hyprlnk is written in standard Rust with zero external build-time dependencies. It can be developed standalone or directly within the [Igel](https://github.com/runepm/igel) monorepo (as a submodule at `hyprlnk/`):
 
 ```sh
 # Build debug binary
-cargo build         # or: rune build
+cargo build         # or: igl build
 
 # Run unit tests and integration suites
-cargo test          # or: rune test
+cargo test          # or: igl test
 
 # Build optimized release binary for benchmarking
 cargo build --release

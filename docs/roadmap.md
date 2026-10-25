@@ -9,7 +9,7 @@
 - **Linux**: ELF for x86-64, x86, AArch64, ARM, RISC-V, POWER (ppc64le),
   s390x and LoongArch — executables (PIE, static, static-pie) and shared
   objects against glibc and musl, symbol versions, all TLS models with
-  relaxation, IFUNC, `--gc-sections`, build IDs; Rune's default linker.
+  relaxation, IFUNC, `--gc-sections`, build IDs; Igel's default linker.
 
 ## Linux: finishing touches
 
@@ -42,7 +42,7 @@
 ## Faster still
 
 - Parallel symbol resolution (resolving in place in a concurrent table)
-- Incremental relinking inside Rune: keep the previous link's state between
+- Incremental relinking inside Igel: keep the previous link's state between
   builds and only redo what changed
 - Starting LINKEDIT (symbol table, export trie) before layout finishes
 - Smaller working set for very large links (lazier symbol decoding)

@@ -178,22 +178,22 @@ sizes, exception-table formats. The rest of the linker asks it.
    others; base relocations, the sorted exception table and the headers
    follow; the image and the PDB are committed together.
 
-## Rune integration
+## Igel integration
 
-Rune passes `-C linker=<rune>` to `rustc` (and, for Apple targets,
-`-C linker-flavor=ld64.lld`) and sets `RUNE_HYPRLNK` on the compiler; `rune`'s
+Igel passes `-C linker=<igl>` to `rustc` (and, for Apple targets,
+`-C linker-flavor=ld64.lld`) and sets `IGEL_HYPRLNK` on the compiler; `igl`'s
 `main` sees the variable and runs `hyprlnk::main_with_args` instead of its own
 command line. On Linux, rustc hands it a `cc` command line: hyprlnk runs the
-target's C compiler (`HYPRLNK_CC`, which Rune sets from
-`target.<triple>.linker`, else `cc`) with a directory holding `rune` as `ld`,
-and the compiler runs `rune` again as the linker. The linker setting a unit
-is cached under is `rune:hyprlnk@<version>` (plus the C compiler, on Linux),
-independent of where `rune` is installed. See
-`crates/rune-common/src/linker.rs` in the Rune repository.
+target's C compiler (`HYPRLNK_CC`, which Igel sets from
+`target.<triple>.linker`, else `cc`) with a directory holding `igl` as `ld`,
+and the compiler runs `igl` again as the linker. The linker setting a unit
+is cached under is `igl:hyprlnk@<version>` (plus the C compiler, on Linux),
+independent of where `igl` is installed. See
+`crates/igel-common/src/linker.rs` in the Igel repository.
 
 ## Testing
 
-- Unit tests next to the code (`cargo test` / `rune test -p hyprlnk`).
+- Unit tests next to the code (`cargo test` / `igl test -p hyprlnk`).
 - `tests/macho.rs`: end-to-end on macOS with rustc and clang — unwinding,
   threads and thread locals, backtraces, chained fixups, `cc`-style command
   lines, cdylibs and Rust dylibs, proc-macros loaded by rustc, the debug map
@@ -211,4 +211,4 @@ independent of where `rune` is installed. See
   version scripts, valid DWARF, `ld` options, reproducible output, writing
   outputs in place only when safe, and every other architecture under
   qemu-user when the emulator and the Rust target are installed.
-- At scale: Rune's own test suite, which Rune links with hyprlnk by default.
+- At scale: Igel's own test suite, which Igel links with hyprlnk by default.
