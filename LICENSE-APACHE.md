@@ -188,6 +188,7 @@
 
    Copyright 2026 Jonas Franke
    Copyright 2026 Hyprlnk Contributors
+   Copyright 2026 Igel Contributors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
