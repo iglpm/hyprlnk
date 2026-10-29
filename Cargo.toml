@@ -31,7 +31,7 @@ mimalloc = { version = "0.1", default-features = false }
 memchr = "2"
 # Compressed debug sections in ELF inputs (`-gz`, the default of some toolchains).
 miniz_oxide = "0.9"
-zstd = { version = "0.13", default-features = false }
+zstd = { version = "0.14", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
